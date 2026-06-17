@@ -90,6 +90,12 @@ export class MissedCallVoicemailStack extends cdk.Stack {
         resources: ["*"],
       })
     );
+    gvWebhookFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["polly:SynthesizeSpeech"],
+        resources: ["*"],
+      })
+    );
 
     const httpApi = new apigatewayv2.HttpApi(this, "GvWebhookApi", {
       apiName: "missed-call-gv-webhook",

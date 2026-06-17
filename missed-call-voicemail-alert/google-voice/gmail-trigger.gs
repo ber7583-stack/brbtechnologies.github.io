@@ -1,11 +1,10 @@
 /**
- * Google Voice missed calls + voicemails → AWS SMS/MMS + email alerts
+ * Google Voice → AWS alerts
  *
- * Google Voice emails contain a PLAY LINK, not an audio attachment.
- * This script tries to download audio from that link; if Google blocks it,
- * the alert email still includes the clickable play link.
- *
- * Trigger: Time-driven → checkForVoicemailEmails → Every minute
+ * Google Voice emails contain a play LINK + transcript, not an MP3 attachment.
+ * This script tries several ways to fetch the real recording. If Google blocks
+ * that, AWS turns the transcript into a spoken MP3 (Amazon Polly) so you still
+ * get a playable file on phone/email.
  */
 
 const WEBHOOK_URL = "https://7wo4ekjym9.execute-api.us-east-1.amazonaws.com/webhook";
@@ -31,10 +30,13 @@ function testCheckNow() {
 }
 
 function isGoogleVoiceEmail_(msg) {
-  const from = msg.getFrom() || "";
-  const subject = msg.getSubject() || "";
-  const body = msg.getPlainBody().substring(0, 300).toLowerCase();
-  const text = (from + " " + subject + " " + body).toLowerCase();
+  const text = (
+    (msg.getFrom() || "") +
+    " " +
+    (msg.getSubject() || "") +
+    " " +
+    msg.getPlainBody().substring(0, 500)
+  ).toLowerCase();
   if (!/voice\.google|txt\.voice\.google/.test(text)) return false;
   return /missed call|voicemail|voice message|new text message from/.test(text);
 }
@@ -46,68 +48,142 @@ function detectAlertType_(subject, snippet) {
   return "missed_call";
 }
 
-/** GV emails use a play link in HTML — not a file attachment. */
 function extractVoicemailPlayUrl_(msg) {
-  const html = (msg.getBody() || "").replace(/&amp;/g, "&");
-  const plain = msg.getPlainBody() || "";
-  const blob = html + "\n" + plain;
-
+  const blob = (msg.getBody() || "").replace(/&amp;/g, "&") + "\n" + (msg.getPlainBody() || "");
   const patterns = [
     /https?:\/\/www\.google\.com\/voice\/fm\/[A-Za-z0-9._-]+/i,
     /https?:\/\/voice\.google\.com\/u\/\d+\/voicemail\/[A-Za-z0-9._-]+/i,
     /https?:\/\/voice\.google\.com\/voicemail\/[A-Za-z0-9._-]+/i,
     /https?:\/\/account\.google\.com\/voice[^\s"'<>]*/i,
   ];
-
   for (var i = 0; i < patterns.length; i++) {
-    var match = blob.match(patterns[i]);
-    if (match) return match[0];
+    var m = blob.match(patterns[i]);
+    if (m) return m[0];
   }
   return null;
 }
 
-/** Try to download MP3 from GV play link (works for some accounts; Google may block). */
-function tryDownloadVoicemailAudio_(playUrl) {
-  var urls = [playUrl];
-  if (playUrl.indexOf("/voice/fm/") >= 0) {
-    urls.push(playUrl.replace("/voice/fm/", "/voice/media/svm/"));
+function extractVoicemailId_(playUrl, html) {
+  var blob = (playUrl || "") + "\n" + (html || "");
+  var patterns = [
+    /voicemail\/([A-Za-z0-9._-]+)/i,
+    /\/voice\/fm\/([A-Za-z0-9._-]+)/i,
+    /\/media\/svm\/([A-Za-z0-9._-]+)/i,
+    /[?&]e=([A-Za-z0-9._-]+)/i,
+  ];
+  for (var i = 0; i < patterns.length; i++) {
+    var m = blob.match(patterns[i]);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+function extractTranscript_(plainBody) {
+  if (!plainBody) return "";
+  var text = plainBody;
+  var marker = text.match(/transcript\s*:?\s*/i);
+  if (marker) {
+    text = text.substring(text.search(/transcript\s*:?\s*/i) + marker[0].length);
+  }
+  text = text.replace(/play\s+message.*$/gim, "");
+  text = text.replace(/https?:\/\/\S+/g, "");
+  text = text.replace(/google voice/gi, "");
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function fetchAudioUrl_(url) {
+  var resp = UrlFetchApp.fetch(url, {
+    muteHttpExceptions: true,
+    followRedirects: true,
+    headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() },
+  });
+  if (resp.getResponseCode() !== 200) return null;
+  var bytes = resp.getBlob().getBytes();
+  if (!bytes || bytes.length < 500) return null;
+  var type = (resp.getBlob().getContentType() || "").toLowerCase();
+  if (
+    type.indexOf("audio/") === 0 ||
+    type.indexOf("application/octet") === 0 ||
+    type.indexOf("mpeg") >= 0
+  ) {
+    return {
+      fileName: "voicemail-recording.mp3",
+      contentType: type.indexOf("audio/") === 0 ? type : "audio/mpeg",
+      dataBase64: Utilities.base64Encode(bytes),
+      source: "recording",
+    };
+  }
+  return null;
+}
+
+function scrapeAudioUrlsFromHtml_(html) {
+  var found = [];
+  var patterns = [
+    /https?:\/\/[^"'\s]+\.googleusercontent\.com\/[^"'\s]+/gi,
+    /https?:\/\/[^"'\s]+\/voice\/media\/[^"'\s]+/gi,
+    /https?:\/\/[^"'\s]+\/media\/svm\/[^"'\s]+/gi,
+  ];
+  for (var p = 0; p < patterns.length; p++) {
+    var matches = html.match(patterns[p]) || [];
+    for (var i = 0; i < matches.length; i++) {
+      if (found.indexOf(matches[i]) < 0) found.push(matches[i]);
+    }
+  }
+  return found;
+}
+
+function tryDownloadVoicemailAudio_(msg, playUrl) {
+  var html = (msg.getBody() || "").replace(/&amp;/g, "&");
+  var candidates = [];
+
+  if (playUrl) {
+    candidates.push(playUrl);
+    if (playUrl.indexOf("/voice/fm/") >= 0) {
+      candidates.push(playUrl.replace("/voice/fm/", "/voice/media/svm/"));
+    }
   }
 
-  for (var i = 0; i < urls.length; i++) {
+  var id = extractVoicemailId_(playUrl, html);
+  if (id) {
+    candidates.push("https://www.google.com/voice/media/send_voicemail/" + id + "/");
+    candidates.push("https://www.google.com/voice/b/0/downloadvoicemail?e=" + id);
+  }
+
+  scrapeAudioUrlsFromHtml_(html).forEach(function (u) {
+    if (candidates.indexOf(u) < 0) candidates.push(u);
+  });
+
+  for (var i = 0; i < candidates.length; i++) {
+    var audio = fetchAudioUrl_(candidates[i]);
+    if (audio) return audio;
+  }
+
+  if (playUrl) {
     try {
-      var resp = UrlFetchApp.fetch(urls[i], {
+      var page = UrlFetchApp.fetch(playUrl, {
         muteHttpExceptions: true,
         followRedirects: true,
         headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() },
       });
-      if (resp.getResponseCode() !== 200) continue;
-
-      var blob = resp.getBlob();
-      var bytes = blob.getBytes();
-      if (!bytes || bytes.length < 500) continue;
-
-      var type = (blob.getContentType() || "").toLowerCase();
-      if (
-        type.indexOf("audio/") === 0 ||
-        type.indexOf("application/octet") === 0 ||
-        type.indexOf("mpeg") >= 0
-      ) {
-        return {
-          fileName: "voicemail.mp3",
-          contentType: type.indexOf("audio/") === 0 ? type : "audio/mpeg",
-          dataBase64: Utilities.base64Encode(bytes),
-        };
+      if (page.getResponseCode() === 200) {
+        var pageUrls = scrapeAudioUrlsFromHtml_(page.getContentText());
+        for (var j = 0; j < pageUrls.length; j++) {
+          var scraped = fetchAudioUrl_(pageUrls[j]);
+          if (scraped) return scraped;
+        }
       }
     } catch (e) {
-      Logger.log("Audio download failed for " + urls[i] + ": " + e);
+      Logger.log("Page scrape failed: " + e);
     }
   }
+
   return null;
 }
 
 function sendAlert_(msg) {
   const subject = msg.getSubject() || "";
-  const snippet = msg.getPlainBody().substring(0, 500);
+  const plain = msg.getPlainBody() || "";
+  const snippet = plain.substring(0, 1500);
   const callerMatch = (subject + " " + snippet).match(
     /\+?1?\s*\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/
   );
@@ -124,23 +200,25 @@ function sendAlert_(msg) {
     const playUrl = extractVoicemailPlayUrl_(msg);
     if (playUrl) payload.playUrl = playUrl;
 
-    const audio = playUrl ? tryDownloadVoicemailAudio_(playUrl) : null;
+    const transcript = extractTranscript_(plain);
+    if (transcript) payload.transcript = transcript;
+
+    const audio = tryDownloadVoicemailAudio_(msg, playUrl);
     if (audio) {
       payload.audioFileName = audio.fileName;
       payload.audioContentType = audio.contentType;
       payload.audioBase64 = audio.dataBase64;
+      payload.audioSource = audio.source;
     }
   }
 
-  const options = {
+  const res = UrlFetchApp.fetch(WEBHOOK_URL, {
     method: "post",
     contentType: "application/json",
     headers: { "X-Webhook-Secret": WEBHOOK_SECRET },
     payload: JSON.stringify(payload),
     muteHttpExceptions: true,
-  };
-
-  const res = UrlFetchApp.fetch(WEBHOOK_URL, options);
+  });
   const code = res.getResponseCode();
   const body = res.getContentText();
   Logger.log("AWS response: " + code + " " + body);
@@ -151,8 +229,7 @@ function sendAlert_(msg) {
 
 function wasProcessed_(messageId) {
   return (
-    PropertiesService.getScriptProperties().getProperty("processed:" + messageId) ===
-    "1"
+    PropertiesService.getScriptProperties().getProperty("processed:" + messageId) === "1"
   );
 }
 

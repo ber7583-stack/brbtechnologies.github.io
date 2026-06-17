@@ -23,6 +23,7 @@ logger.setLevel(logging.INFO)
 sms = boto3.client("pinpoint-sms-voice-v2")
 ses = boto3.client("ses")
 s3 = boto3.client("s3")
+polly = boto3.client("polly")
 dynamodb = boto3.resource("dynamodb")
 
 RECIPIENT_PHONE = os.environ["RECIPIENT_PHONE"]
@@ -54,14 +55,15 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     subject = body.get("subject", "")
     snippet = body.get("snippet", "")
     play_url = body.get("playUrl", "")
+    transcript = body.get("transcript", "") or body.get("snippet", "")
     if caller == "Unknown":
         caller = extract_caller(subject, snippet)
 
-    audio_bytes, audio_name, audio_type = decode_audio(body)
+    audio_bytes, audio_name, audio_type, audio_source = resolve_audio(body, alert_type, transcript, caller)
     time_str = datetime.now(timezone.utc).astimezone().strftime("%b %d, %I:%M %p")
     sms_body, email_subject, email_body, email_html = build_messages(
-        alert_type, caller, time_str, subject, snippet, play_url,
-        has_audio=bool(audio_bytes),
+        alert_type, caller, time_str, subject, snippet, play_url, transcript,
+        has_audio=bool(audio_bytes), audio_source=audio_source,
     )
 
     phone_delivery = send_phone_alert(sms_body, audio_bytes, audio_name, audio_type, alert_type)
@@ -90,8 +92,26 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "phoneDelivery": phone_delivery,
             "emailId": email_id,
             "hasAudio": bool(audio_bytes),
+            "audioSource": audio_source,
         },
     )
+
+
+def resolve_audio(
+    body: dict[str, Any], alert_type: str, transcript: str, caller: str
+) -> tuple[bytes | None, str, str, str]:
+    audio_bytes, audio_name, audio_type = decode_audio(body)
+    if audio_bytes:
+        return audio_bytes, audio_name, audio_type, body.get("audioSource", "recording")
+
+    if alert_type != "voicemail":
+        return None, "", "", ""
+
+    tts_bytes = synthesize_transcript_audio(transcript, caller)
+    if tts_bytes:
+        return tts_bytes, f"voicemail-transcript-{caller}.mp3", "audio/mpeg", "transcript-tts"
+
+    return None, "", "", ""
 
 
 def decode_audio(body: dict[str, Any]) -> tuple[bytes | None, str, str]:
@@ -106,6 +126,26 @@ def decode_audio(body: dict[str, Any]) -> tuple[bytes | None, str, str]:
     file_name = body.get("audioFileName") or "voicemail.mp3"
     content_type = body.get("audioContentType") or guess_audio_type(file_name)
     return audio_bytes, file_name, content_type
+
+
+def synthesize_transcript_audio(transcript: str, caller: str) -> bytes | None:
+    text = re.sub(r"\s+", " ", (transcript or "").strip())
+    if len(text) < 3:
+        return None
+    spoken = f"Voicemail from {caller}. {text}"[:3000]
+    try:
+        result = polly.synthesize_speech(
+            Text=spoken,
+            OutputFormat="mp3",
+            VoiceId="Joanna",
+            Engine="neural",
+        )
+        audio_stream = result.get("AudioStream")
+        if audio_stream:
+            return audio_stream.read()
+    except ClientError as exc:
+        logger.warning("Polly TTS failed: %s", exc)
+    return None
 
 
 def guess_audio_type(file_name: str) -> str:
@@ -216,7 +256,9 @@ def build_messages(
     gv_subject: str,
     snippet: str,
     play_url: str,
+    transcript: str,
     has_audio: bool,
+    audio_source: str,
 ) -> tuple[str, str, str, str]:
     if alert_type == "missed_call":
         sms_body = f"Missed call from {caller} at {time_str}. No voicemail left."
@@ -228,47 +270,55 @@ def build_messages(
             f"No voicemail was left.\n"
         )
         email_html = f"<p><b>Missed call from {caller}</b><br>Time: {time_str}<br>No voicemail left.</p>"
-    elif has_audio:
-        sms_body = f"Voicemail from {caller} at {time_str}. Audio attached to email."
-        email_subject = f"Voicemail from {caller}"
+        return sms_body, email_subject, email_body, email_html
+
+    email_subject = f"Voicemail from {caller}"
+    link = (
+        f'<p><a href="{play_url}"><b>Play original recording in Google Voice</b></a></p>'
+        if play_url
+        else ""
+    )
+    transcript_block = transcript.strip() or snippet.strip()
+
+    if has_audio and audio_source == "recording":
+        sms_body = f"Voicemail from {caller} at {time_str}. Recording attached."
         email_body = (
-            f"Voicemail alert\n\n"
-            f"Caller: {caller}\n"
-            f"Time: {time_str}\n"
-            f"The recording is attached to this email.\n"
+            f"Voicemail alert\n\nCaller: {caller}\nTime: {time_str}\n"
+            f"The original recording is attached.\n"
         )
-        if play_url:
-            email_body += f"\nPlay online: {play_url}\n"
-        if snippet.strip():
-            email_body += f"\nTranscript:\n{snippet.strip()}\n"
-        link = f'<p><a href="{play_url}">Play in Google Voice</a></p>' if play_url else ""
         email_html = (
             f"<p><b>Voicemail from {caller}</b><br>Time: {time_str}<br>"
-            f"Recording attached.</p>{link}"
+            f"Original recording attached.</p>{link}"
         )
-    else:
-        sms_body = f"Voicemail from {caller} at {time_str}. Play link in your email."
-        email_subject = f"Voicemail from {caller}"
+    elif has_audio:
+        sms_body = f"Voicemail from {caller} at {time_str}. Spoken transcript attached."
         email_body = (
-            f"Voicemail alert\n\n"
-            f"Caller: {caller}\n"
-            f"Time: {time_str}\n"
+            f"Voicemail alert\n\nCaller: {caller}\nTime: {time_str}\n"
+            f"Google does not allow auto-download of voicemail recordings from email.\n"
+            f"A spoken transcript MP3 is attached instead.\n"
         )
         if play_url:
-            email_body += f"\nPlay voicemail: {play_url}\n"
-        else:
-            email_body += "\nOpen Google Voice or the original Gmail message to listen.\n"
-        if snippet.strip():
-            email_body += f"\nTranscript:\n{snippet.strip()}\n"
-        link = (
-            f'<p><a href="{play_url}"><b>Click here to play voicemail</b></a></p>'
-            if play_url
-            else "<p>Open Google Voice to play this message.</p>"
+            email_body += f"\nPlay original recording: {play_url}\n"
+        if transcript_block:
+            email_body += f"\nTranscript:\n{transcript_block}\n"
+        email_html = (
+            f"<p><b>Voicemail from {caller}</b><br>Time: {time_str}<br>"
+            f"Spoken transcript attached as MP3.</p>{link}"
         )
-        transcript_html = f"<pre>{snippet.strip()}</pre>" if snippet.strip() else ""
+        if transcript_block:
+            email_html += f"<pre>{transcript_block}</pre>"
+    else:
+        sms_body = f"Voicemail from {caller} at {time_str}. Play link in your email."
+        email_body = f"Voicemail alert\n\nCaller: {caller}\nTime: {time_str}\n"
+        if play_url:
+            email_body += f"\nPlay voicemail: {play_url}\n"
+        if transcript_block:
+            email_body += f"\nTranscript:\n{transcript_block}\n"
+        transcript_html = f"<pre>{transcript_block}</pre>" if transcript_block else ""
         email_html = (
             f"<p><b>Voicemail from {caller}</b><br>Time: {time_str}</p>{link}{transcript_html}"
         )
+
     return sms_body, email_subject, email_body, email_html
 
 
