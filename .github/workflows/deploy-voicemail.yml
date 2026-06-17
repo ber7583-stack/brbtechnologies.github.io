@@ -1,0 +1,47 @@
+name: Deploy missed-call voicemail
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "missed-call-voicemail-alert/**"
+      - ".github/workflows/deploy-voicemail.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: missed-call-voicemail-alert/infra
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: missed-call-voicemail-alert/infra/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build CDK
+        run: npm run build
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: CDK bootstrap (if needed)
+        run: npx cdk bootstrap aws://$(aws sts get-caller-identity --query Account --output text)/us-east-1
+        continue-on-error: true
+
+      - name: Deploy stack
+        run: npx cdk deploy --require-approval never
+
+      - name: Stack outputs
+        run: aws cloudformation describe-stacks --stack-name MissedCallVoicemailAlert --query "Stacks[0].Outputs" --output table
