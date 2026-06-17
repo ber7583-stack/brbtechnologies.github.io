@@ -19,7 +19,7 @@ function checkForVoicemailEmails() {
   ensureLabel_();
 
   const query =
-    "from:(txt.voice.google.com OR voice-noreply@google.com) is:unread -label:" +
+    "from:(txt.voice.google.com OR voice-noreply@google.com) newer_than:2d -label:" +
     PROCESSED_LABEL;
   const threads = GmailApp.search(query, 0, 20);
 
@@ -66,7 +66,12 @@ function sendAlert_(msg) {
   };
 
   const res = UrlFetchApp.fetch(WEBHOOK_URL, options);
-  Logger.log(res.getResponseCode() + " " + res.getContentText());
+  const code = res.getResponseCode();
+  const body = res.getContentText();
+  Logger.log("AWS response: " + code + " " + body);
+  if (code !== 200) {
+    throw new Error("SMS alert failed (" + code + "): " + body);
+  }
 }
 
 function ensureLabel_() {

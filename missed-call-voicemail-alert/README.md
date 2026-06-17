@@ -42,7 +42,7 @@ const PROCESSED_LABEL = "voicemail-sms-alerted";
 function checkForVoicemailEmails() {
   ensureLabel_();
   const query =
-    "from:(txt.voice.google.com OR voice-noreply@google.com) is:unread -label:" +
+    "from:(txt.voice.google.com OR voice-noreply@google.com) newer_than:2d -label:" +
     PROCESSED_LABEL;
   const threads = GmailApp.search(query, 0, 20);
   for (const thread of threads) {
