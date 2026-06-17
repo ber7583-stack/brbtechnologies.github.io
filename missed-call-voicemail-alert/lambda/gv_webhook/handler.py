@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from email.mime.application import MIMEApplication
@@ -17,13 +18,15 @@ from typing import Any
 import boto3
 from botocore.exceptions import ClientError
 
+from gv_client import fetch_voicemail_audio
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 sms = boto3.client("pinpoint-sms-voice-v2")
 ses = boto3.client("ses")
 s3 = boto3.client("s3")
-polly = boto3.client("polly")
+secrets = boto3.client("secretsmanager")
 dynamodb = boto3.resource("dynamodb")
 
 RECIPIENT_PHONE = os.environ["RECIPIENT_PHONE"]
@@ -34,6 +37,9 @@ WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
 OPT_OUT_TABLE = os.environ.get("OPT_OUT_TABLE", "")
 MMS_BUCKET = os.environ.get("MMS_BUCKET", "")
 MMS_MAX_AUDIO_BYTES = int(os.environ.get("MMS_MAX_AUDIO_BYTES", "614400"))
+GV_SESSION_SECRET_ARN = os.environ.get("GV_SESSION_SECRET_ARN", "")
+
+_session_cache: dict[str, Any] = {"value": "", "loaded_at": 0.0}
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -59,7 +65,10 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     if caller == "Unknown":
         caller = extract_caller(subject, snippet)
 
-    audio_bytes, audio_name, audio_type, audio_source = resolve_audio(body, alert_type, transcript, caller)
+    email_timestamp = parse_timestamp(body.get("emailTimestamp"))
+    audio_bytes, audio_name, audio_type, audio_source = resolve_audio(
+        body, alert_type, caller, email_timestamp
+    )
     time_str = datetime.now(timezone.utc).astimezone().strftime("%b %d, %I:%M %p")
     sms_body, email_subject, email_body, email_html = build_messages(
         alert_type, caller, time_str, subject, snippet, play_url, transcript,
@@ -98,20 +107,54 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
 
 def resolve_audio(
-    body: dict[str, Any], alert_type: str, transcript: str, caller: str
+    body: dict[str, Any],
+    alert_type: str,
+    caller: str,
+    email_timestamp: datetime | None,
 ) -> tuple[bytes | None, str, str, str]:
     audio_bytes, audio_name, audio_type = decode_audio(body)
-    if audio_bytes:
+    if audio_bytes and len(audio_bytes) >= 500:
         return audio_bytes, audio_name, audio_type, body.get("audioSource", "recording")
 
     if alert_type != "voicemail":
         return None, "", "", ""
 
-    tts_bytes = synthesize_transcript_audio(transcript, caller)
-    if tts_bytes:
-        return tts_bytes, f"voicemail-transcript-{caller}.mp3", "audio/mpeg", "transcript-tts"
+    session_json = get_gv_session_json()
+    if session_json:
+        result = fetch_voicemail_audio(session_json, caller, around=email_timestamp)
+        if result:
+            audio_bytes, audio_name = result
+            return audio_bytes, audio_name, "audio/mpeg", "recording"
 
     return None, "", "", ""
+
+
+def get_gv_session_json() -> str:
+    if not GV_SESSION_SECRET_ARN:
+        return ""
+    now = time.time()
+    if _session_cache["value"] and now - _session_cache["loaded_at"] < 300:
+        return _session_cache["value"]
+    try:
+        resp = secrets.get_secret_value(SecretId=GV_SESSION_SECRET_ARN)
+        value = resp.get("SecretString") or ""
+        _session_cache["value"] = value
+        _session_cache["loaded_at"] = now
+        return value
+    except ClientError as exc:
+        logger.warning("Could not load Google Voice session: %s", exc)
+        return ""
+
+
+def parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def decode_audio(body: dict[str, Any]) -> tuple[bytes | None, str, str]:
@@ -126,26 +169,6 @@ def decode_audio(body: dict[str, Any]) -> tuple[bytes | None, str, str]:
     file_name = body.get("audioFileName") or "voicemail.mp3"
     content_type = body.get("audioContentType") or guess_audio_type(file_name)
     return audio_bytes, file_name, content_type
-
-
-def synthesize_transcript_audio(transcript: str, caller: str) -> bytes | None:
-    text = re.sub(r"\s+", " ", (transcript or "").strip())
-    if len(text) < 3:
-        return None
-    spoken = f"Voicemail from {caller}. {text}"[:3000]
-    try:
-        result = polly.synthesize_speech(
-            Text=spoken,
-            OutputFormat="mp3",
-            VoiceId="Joanna",
-            Engine="neural",
-        )
-        audio_stream = result.get("AudioStream")
-        if audio_stream:
-            return audio_stream.read()
-    except ClientError as exc:
-        logger.warning("Polly TTS failed: %s", exc)
-    return None
 
 
 def guess_audio_type(file_name: str) -> str:
@@ -289,33 +312,26 @@ def build_messages(
             f"<p><b>Voicemail from {caller}</b><br>Time: {time_str}<br>"
             f"Original recording attached.</p>{link}"
         )
-    elif has_audio:
-        sms_body = f"Voicemail from {caller} at {time_str}. Spoken transcript attached."
-        email_body = (
-            f"Voicemail alert\n\nCaller: {caller}\nTime: {time_str}\n"
-            f"Google does not allow auto-download of voicemail recordings from email.\n"
-            f"A spoken transcript MP3 is attached instead.\n"
-        )
-        if play_url:
-            email_body += f"\nPlay original recording: {play_url}\n"
-        if transcript_block:
-            email_body += f"\nTranscript:\n{transcript_block}\n"
-        email_html = (
-            f"<p><b>Voicemail from {caller}</b><br>Time: {time_str}<br>"
-            f"Spoken transcript attached as MP3.</p>{link}"
-        )
-        if transcript_block:
-            email_html += f"<pre>{transcript_block}</pre>"
     else:
         sms_body = f"Voicemail from {caller} at {time_str}. Play link in your email."
-        email_body = f"Voicemail alert\n\nCaller: {caller}\nTime: {time_str}\n"
+        email_body = (
+            f"Voicemail alert\n\nCaller: {caller}\nTime: {time_str}\n"
+            f"Could not attach the original recording automatically.\n"
+        )
         if play_url:
             email_body += f"\nPlay voicemail: {play_url}\n"
         if transcript_block:
             email_body += f"\nTranscript:\n{transcript_block}\n"
+        email_body += (
+            "\nTo enable auto-attachment of original recordings, run:\n"
+            "  python3 scripts/gv-session-login.py\n"
+            "  bash scripts/upload-gv-session.sh\n"
+        )
         transcript_html = f"<pre>{transcript_block}</pre>" if transcript_block else ""
         email_html = (
-            f"<p><b>Voicemail from {caller}</b><br>Time: {time_str}</p>{link}{transcript_html}"
+            f"<p><b>Voicemail from {caller}</b><br>Time: {time_str}<br>"
+            f"Original recording not attached — use the play link below.</p>"
+            f"{link}{transcript_html}"
         )
 
     return sms_body, email_subject, email_body, email_html

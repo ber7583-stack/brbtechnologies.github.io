@@ -45,14 +45,21 @@ export class MissedCallVoicemailStack extends cdk.Stack {
       autoDeleteObjects: true,
     });
 
+    const gvSessionSecret = new secretsmanager.Secret(this, "GvSessionSecret", {
+      description: "Google Voice browser session cookies for voicemail recording download",
+      secretStringValue: cdk.SecretValue.unsafePlainText(
+        JSON.stringify({ version: 1, cookies: [] })
+      ),
+    });
+
     const gvWebhookFn = new lambda.Function(this, "GvWebhook", {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "handler.handler",
       code: lambda.Code.fromAsset(
         path.join(__dirname, "../../lambda/gv_webhook")
       ),
-      timeout: cdk.Duration.seconds(60),
-      memorySize: 256,
+      timeout: cdk.Duration.seconds(90),
+      memorySize: 512,
       environment: {
         RECIPIENT_PHONE: CONFIG.recipientPhone,
         RECIPIENT_EMAIL: CONFIG.recipientEmail,
@@ -62,8 +69,11 @@ export class MissedCallVoicemailStack extends cdk.Stack {
         OPT_OUT_TABLE: optOutTable.tableName,
         MMS_BUCKET: mmsBucket.bucketName,
         MMS_MAX_AUDIO_BYTES: String(CONFIG.mmsMaxAudioBytes),
+        GV_SESSION_SECRET_ARN: gvSessionSecret.secretArn,
       },
     });
+
+    gvSessionSecret.grantRead(gvWebhookFn);
 
     optOutTable.grantReadData(gvWebhookFn);
     mmsBucket.grantReadWrite(gvWebhookFn);
@@ -87,12 +97,6 @@ export class MissedCallVoicemailStack extends cdk.Stack {
     gvWebhookFn.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["ses:SendEmail", "ses:SendRawEmail"],
-        resources: ["*"],
-      })
-    );
-    gvWebhookFn.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ["polly:SynthesizeSpeech"],
         resources: ["*"],
       })
     );

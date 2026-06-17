@@ -1,10 +1,8 @@
 /**
  * Google Voice → AWS alerts
  *
- * Google Voice emails contain a play LINK + transcript, not an MP3 attachment.
- * This script tries several ways to fetch the real recording. If Google blocks
- * that, AWS turns the transcript into a spoken MP3 (Amazon Polly) so you still
- * get a playable file on phone/email.
+ * Gmail notifies us of new voicemails. AWS downloads the ORIGINAL recording
+ * from Google Voice's internal API (requires a one-time browser login — see README).
  */
 
 const WEBHOOK_URL = "https://7wo4ekjym9.execute-api.us-east-1.amazonaws.com/webhook";
@@ -54,26 +52,10 @@ function extractVoicemailPlayUrl_(msg) {
     /https?:\/\/www\.google\.com\/voice\/fm\/[A-Za-z0-9._-]+/i,
     /https?:\/\/voice\.google\.com\/u\/\d+\/voicemail\/[A-Za-z0-9._-]+/i,
     /https?:\/\/voice\.google\.com\/voicemail\/[A-Za-z0-9._-]+/i,
-    /https?:\/\/account\.google\.com\/voice[^\s"'<>]*/i,
   ];
   for (var i = 0; i < patterns.length; i++) {
     var m = blob.match(patterns[i]);
     if (m) return m[0];
-  }
-  return null;
-}
-
-function extractVoicemailId_(playUrl, html) {
-  var blob = (playUrl || "") + "\n" + (html || "");
-  var patterns = [
-    /voicemail\/([A-Za-z0-9._-]+)/i,
-    /\/voice\/fm\/([A-Za-z0-9._-]+)/i,
-    /\/media\/svm\/([A-Za-z0-9._-]+)/i,
-    /[?&]e=([A-Za-z0-9._-]+)/i,
-  ];
-  for (var i = 0; i < patterns.length; i++) {
-    var m = blob.match(patterns[i]);
-    if (m) return m[1];
   }
   return null;
 }
@@ -91,95 +73,6 @@ function extractTranscript_(plainBody) {
   return text.replace(/\s+/g, " ").trim();
 }
 
-function fetchAudioUrl_(url) {
-  var resp = UrlFetchApp.fetch(url, {
-    muteHttpExceptions: true,
-    followRedirects: true,
-    headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() },
-  });
-  if (resp.getResponseCode() !== 200) return null;
-  var bytes = resp.getBlob().getBytes();
-  if (!bytes || bytes.length < 500) return null;
-  var type = (resp.getBlob().getContentType() || "").toLowerCase();
-  if (
-    type.indexOf("audio/") === 0 ||
-    type.indexOf("application/octet") === 0 ||
-    type.indexOf("mpeg") >= 0
-  ) {
-    return {
-      fileName: "voicemail-recording.mp3",
-      contentType: type.indexOf("audio/") === 0 ? type : "audio/mpeg",
-      dataBase64: Utilities.base64Encode(bytes),
-      source: "recording",
-    };
-  }
-  return null;
-}
-
-function scrapeAudioUrlsFromHtml_(html) {
-  var found = [];
-  var patterns = [
-    /https?:\/\/[^"'\s]+\.googleusercontent\.com\/[^"'\s]+/gi,
-    /https?:\/\/[^"'\s]+\/voice\/media\/[^"'\s]+/gi,
-    /https?:\/\/[^"'\s]+\/media\/svm\/[^"'\s]+/gi,
-  ];
-  for (var p = 0; p < patterns.length; p++) {
-    var matches = html.match(patterns[p]) || [];
-    for (var i = 0; i < matches.length; i++) {
-      if (found.indexOf(matches[i]) < 0) found.push(matches[i]);
-    }
-  }
-  return found;
-}
-
-function tryDownloadVoicemailAudio_(msg, playUrl) {
-  var html = (msg.getBody() || "").replace(/&amp;/g, "&");
-  var candidates = [];
-
-  if (playUrl) {
-    candidates.push(playUrl);
-    if (playUrl.indexOf("/voice/fm/") >= 0) {
-      candidates.push(playUrl.replace("/voice/fm/", "/voice/media/svm/"));
-    }
-  }
-
-  var id = extractVoicemailId_(playUrl, html);
-  if (id) {
-    candidates.push("https://www.google.com/voice/media/send_voicemail/" + id + "/");
-    candidates.push("https://www.google.com/voice/b/0/downloadvoicemail?e=" + id);
-  }
-
-  scrapeAudioUrlsFromHtml_(html).forEach(function (u) {
-    if (candidates.indexOf(u) < 0) candidates.push(u);
-  });
-
-  for (var i = 0; i < candidates.length; i++) {
-    var audio = fetchAudioUrl_(candidates[i]);
-    if (audio) return audio;
-  }
-
-  if (playUrl) {
-    try {
-      var page = UrlFetchApp.fetch(playUrl, {
-        muteHttpExceptions: true,
-        followRedirects: true,
-        headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() },
-      });
-      if (page.getResponseCode() === 200) {
-        var pageUrls = scrapeAudioUrlsFromHtml_(page.getContentText());
-        for (var j = 0; j < pageUrls.length; j++) {
-          var scraped = fetchAudioUrl_(pageUrls[j]);
-          if (scraped) return scraped;
-        }
-      }
-    } catch (e) {
-      Logger.log("Page scrape failed: " + e);
-    }
-  }
-
-  return null;
-}
-
 function sendAlert_(msg) {
   const subject = msg.getSubject() || "";
   const plain = msg.getPlainBody() || "";
@@ -194,6 +87,7 @@ function sendAlert_(msg) {
     caller: callerMatch ? callerMatch[0] : "Unknown",
     subject: subject,
     snippet: snippet,
+    emailTimestamp: msg.getDate().toISOString(),
   };
 
   if (alertType === "voicemail") {
@@ -202,14 +96,6 @@ function sendAlert_(msg) {
 
     const transcript = extractTranscript_(plain);
     if (transcript) payload.transcript = transcript;
-
-    const audio = tryDownloadVoicemailAudio_(msg, playUrl);
-    if (audio) {
-      payload.audioFileName = audio.fileName;
-      payload.audioContentType = audio.contentType;
-      payload.audioBase64 = audio.dataBase64;
-      payload.audioSource = audio.source;
-    }
   }
 
   const res = UrlFetchApp.fetch(WEBHOOK_URL, {
