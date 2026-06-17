@@ -98,6 +98,14 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             },
         )
 
+    logger.info(
+        "alert caller=%s hasAudio=%s audioBytes=%d phone=%s",
+        caller,
+        bool(audio_bytes),
+        len(audio_bytes) if audio_bytes else 0,
+        phone_delivery,
+    )
+
     return response(
         200,
         {

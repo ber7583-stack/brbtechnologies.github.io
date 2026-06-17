@@ -262,12 +262,30 @@ function downloadRecording_(url) {
 
 function tryDownloadOriginalAudio_(caller, emailDate) {
   try {
+    var messages = listVoicemailMessages_();
+    if (!messages.length) {
+      Logger.log("No voicemails in Google Voice inbox");
+      return null;
+    }
     var match = findVoicemail_(caller, emailDate);
-    if (!match) return null;
+    if (!match) {
+      match = messages[0];
+      Logger.log(
+        "Using latest GV voicemail from " +
+          match._contact_phone +
+          " (caller match failed for " +
+          caller +
+          ")"
+      );
+    }
     var bytes = downloadRecording_(match.recordingUrl);
-    if (!bytes) return null;
+    if (!bytes) {
+      Logger.log("Recording download failed for " + match.recordingUrl.substring(0, 60));
+      return null;
+    }
+    var who = phoneDigits_(match._contact_phone) || phoneDigits_(caller) || "unknown";
     return {
-      fileName: "voicemail-" + phoneDigits_(caller) + ".mp3",
+      fileName: "voicemail-" + who + ".mp3",
       dataBase64: Utilities.base64Encode(bytes),
     };
   } catch (e) {
