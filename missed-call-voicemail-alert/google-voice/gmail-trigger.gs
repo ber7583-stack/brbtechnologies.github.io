@@ -1,20 +1,14 @@
 /**
- * Google Voice voicemail → AWS SMS alert
+ * Google Voice missed calls + voicemails → AWS SMS + email alerts
  *
- * Setup:
- * 1. script.google.com → New project → paste this code into Code.gs → Save
- * 2. Triggers → Add Trigger:
- *      Function: checkForVoicemailEmails
- *      Event source: Time-driven
- *      Type: Minutes timer → Every minute
- * 3. Approve permissions when asked
+ * Trigger: Time-driven → checkForVoicemailEmails → Every minute
  */
 
 const WEBHOOK_URL = "https://7wo4ekjym9.execute-api.us-east-1.amazonaws.com/webhook";
 const WEBHOOK_SECRET = "JDZwDjkR62dt1RyMG6VEMW2Sq2BfHt99";
 const PROCESSED_LABEL = "voicemail-sms-alerted";
 
-/** Runs every minute via time trigger. Checks Gmail for new Google Voice voicemails. */
+/** Runs every minute. Checks Gmail for Google Voice missed-call and voicemail emails. */
 function checkForVoicemailEmails() {
   ensureLabel_();
 
@@ -26,22 +20,35 @@ function checkForVoicemailEmails() {
   for (const thread of threads) {
     const messages = thread.getMessages();
     for (const msg of messages) {
-      if (!isVoicemailEmail_(msg) || wasProcessed_(msg.getId())) continue;
+      if (!isGoogleVoiceEmail_(msg) || wasProcessed_(msg.getId())) continue;
       sendAlert_(msg);
       markProcessed_(thread, msg.getId());
     }
   }
 }
 
-/** Run once manually (Run button) to test without waiting for the timer. */
+/** Run manually from the editor to test right away. */
 function testCheckNow() {
   checkForVoicemailEmails();
 }
 
-function isVoicemailEmail_(msg) {
+function isGoogleVoiceEmail_(msg) {
   const from = msg.getFrom() || "";
   const subject = msg.getSubject() || "";
-  return /voice\.google|txt\.voice\.google/i.test(from + subject);
+  const text = (from + " " + subject).toLowerCase();
+  return (
+    /voice\.google|txt\.voice\.google/.test(text) &&
+    (/missed call|voicemail|voice message|new text message from/.test(
+      (subject + " " + msg.getPlainBody().substring(0, 300)).toLowerCase()
+    ))
+  );
+}
+
+function detectAlertType_(subject, snippet) {
+  const text = (subject + " " + snippet).toLowerCase();
+  if (/voicemail|voice message/.test(text)) return "voicemail";
+  if (/missed call/.test(text)) return "missed_call";
+  return "missed_call";
 }
 
 function sendAlert_(msg) {
@@ -52,6 +59,7 @@ function sendAlert_(msg) {
   );
 
   const payload = {
+    alertType: detectAlertType_(subject, snippet),
     caller: callerMatch ? callerMatch[0] : "Unknown",
     subject: subject,
     snippet: snippet,
@@ -70,7 +78,7 @@ function sendAlert_(msg) {
   const body = res.getContentText();
   Logger.log("AWS response: " + code + " " + body);
   if (code !== 200) {
-    throw new Error("SMS alert failed (" + code + "): " + body);
+    throw new Error("Alert failed (" + code + "): " + body);
   }
 }
 
@@ -83,8 +91,10 @@ function ensureLabel_() {
 }
 
 function wasProcessed_(messageId) {
-  const key = "processed:" + messageId;
-  return PropertiesService.getScriptProperties().getProperty(key) === "1";
+  return (
+    PropertiesService.getScriptProperties().getProperty("processed:" + messageId) ===
+    "1"
+  );
 }
 
 function markProcessed_(thread, messageId) {

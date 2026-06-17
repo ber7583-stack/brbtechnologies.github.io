@@ -42,6 +42,8 @@ export class MissedCallVoicemailStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
       environment: {
         RECIPIENT_PHONE: CONFIG.recipientPhone,
+        RECIPIENT_EMAIL: CONFIG.recipientEmail,
+        SENDER_EMAIL: CONFIG.senderEmail,
         ORIGINATION_IDENTITY: CONFIG.originationIdentity,
         WEBHOOK_SECRET: webhookSecret.secretValue.unsafeUnwrap(),
         OPT_OUT_TABLE: optOutTable.tableName,
@@ -52,6 +54,12 @@ export class MissedCallVoicemailStack extends cdk.Stack {
     gvWebhookFn.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["sms-voice:SendTextMessage"],
+        resources: ["*"],
+      })
+    );
+    gvWebhookFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["ses:SendEmail"],
         resources: ["*"],
       })
     );
