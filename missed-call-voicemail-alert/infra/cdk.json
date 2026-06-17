@@ -15,7 +15,6 @@
     ]
   },
   "context": {
-    "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
-    "ffmpegLayerArn": "arn:aws:lambda:us-east-1:145266761615:layer:ffmpeg:4"
+    "@aws-cdk/aws-lambda:recognizeLayerVersion": true
   }
 }
