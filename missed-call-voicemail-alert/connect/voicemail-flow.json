@@ -1,18 +1,17 @@
 {
   "Version": "2019-10-30",
-  "StartAction": "EnableRecording",
+  "StartAction": "a1111111-1111-1111-1111-111111111111",
   "Metadata": {
     "entryPointPosition": { "x": 20, "y": 20 },
     "ActionMetadata": {
-      "EnableRecording": { "position": { "x": 160, "y": 20 } },
-      "PlayGreeting": { "position": { "x": 320, "y": 20 } },
-      "RecordVoicemail": { "position": { "x": 480, "y": 20 } },
-      "Disconnect": { "position": { "x": 640, "y": 20 } }
+      "a1111111-1111-1111-1111-111111111111": { "position": { "x": 160, "y": 20 } },
+      "b2222222-2222-2222-2222-222222222222": { "position": { "x": 320, "y": 20 } },
+      "c3333333-3333-3333-3333-333333333333": { "position": { "x": 480, "y": 20 } }
     }
   },
   "Actions": [
     {
-      "Identifier": "EnableRecording",
+      "Identifier": "a1111111-1111-1111-1111-111111111111",
       "Type": "UpdateContactRecordingBehavior",
       "Parameters": {
         "RecordingBehavior": {
@@ -22,38 +21,28 @@
         }
       },
       "Transitions": {
-        "NextAction": "PlayGreeting",
-        "Errors": [{ "NextAction": "Disconnect", "ErrorType": "NoMatchingError" }]
+        "NextAction": "b2222222-2222-2222-2222-222222222222"
       }
     },
     {
-      "Identifier": "PlayGreeting",
-      "Type": "MessageParticipant",
-      "Parameters": {
-        "Text": "The person you called at 3 4 7, 7 9 8, 7 5 8 3 is not available. Please leave a message after the tone."
-      },
-      "Transitions": {
-        "NextAction": "RecordVoicemail",
-        "Errors": [{ "NextAction": "Disconnect", "ErrorType": "NoMatchingError" }]
-      }
-    },
-    {
-      "Identifier": "RecordVoicemail",
+      "Identifier": "b2222222-2222-2222-2222-222222222222",
       "Type": "GetParticipantInput",
       "Parameters": {
+        "Text": "The person you called at 3 4 7, 7 9 8, 7 5 8 3 is not available. Please leave a message after the tone.",
         "InputTimeLimitSeconds": 60,
         "StoreInput": "False"
       },
       "Transitions": {
-        "NextAction": "Disconnect",
+        "NextAction": "c3333333-3333-3333-3333-333333333333",
         "Errors": [
-          { "NextAction": "Disconnect", "ErrorType": "InputTimeLimitExceeded" },
-          { "NextAction": "Disconnect", "ErrorType": "NoMatchingError" }
+          { "NextAction": "c3333333-3333-3333-3333-333333333333", "ErrorType": "InputTimeLimitExceeded" },
+          { "NextAction": "c3333333-3333-3333-3333-333333333333", "ErrorType": "NoMatchingCondition" },
+          { "NextAction": "c3333333-3333-3333-3333-333333333333", "ErrorType": "NoMatchingError" }
         ]
       }
     },
     {
-      "Identifier": "Disconnect",
+      "Identifier": "c3333333-3333-3333-3333-333333333333",
       "Type": "DisconnectParticipant",
       "Parameters": {},
       "Transitions": {}

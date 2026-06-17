@@ -174,7 +174,8 @@ export class MissedCallVoicemailStack extends cdk.Stack {
       }>;
     };
     const recordAction = flow.Actions.find(
-      (action) => action.Identifier === "RecordVoicemail"
+      (action) =>
+        action.Identifier === "b2222222-2222-2222-2222-222222222222"
     );
     if (recordAction?.Parameters) {
       recordAction.Parameters.InputTimeLimitSeconds = CONFIG.maxVoicemailSeconds;
