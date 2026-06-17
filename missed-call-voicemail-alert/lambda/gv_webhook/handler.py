@@ -75,7 +75,13 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         has_audio=bool(audio_bytes), audio_source=audio_source,
     )
 
-    phone_delivery = send_phone_alert(sms_body, audio_bytes, audio_name, audio_type, alert_type)
+    try:
+        phone_delivery = send_phone_alert(
+            sms_body, audio_bytes, audio_name, audio_type, alert_type
+        )
+    except Exception as exc:
+        logger.error("Phone alert failed (email will still send): %s", exc)
+        phone_delivery = f"failed:{exc}"
 
     try:
         email_id = send_email(
@@ -208,7 +214,7 @@ def send_phone_alert(
                 MediaUrls=[f"s3://{MMS_BUCKET}/{key}"],
             )
             return f"mms:{result['MessageId']}"
-        except ClientError as exc:
+        except Exception as exc:
             logger.warning("MMS failed (%s); falling back to SMS", exc)
 
     try:
@@ -216,10 +222,9 @@ def send_phone_alert(
             DestinationPhoneNumber=RECIPIENT_PHONE,
             OriginationIdentity=ORIGINATION_IDENTITY,
             MessageBody=sms_body,
-            MessageType="TRANSACTIONAL",
         )
         return f"sms:{result['MessageId']}"
-    except sms.exceptions.ConflictException as exc:
+    except Exception as exc:
         logger.error("SMS send failed: %s", exc)
         raise
 

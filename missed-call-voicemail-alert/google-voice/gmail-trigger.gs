@@ -182,12 +182,19 @@ function findVoicemail_(caller, emailDate) {
   var best = null;
   var bestDelta = 999999999;
   var aroundMs = emailDate ? emailDate.getTime() : 0;
+  var latestFromCaller = null;
+  var latestStart = 0;
+
   messages.forEach(function (msg) {
     if (phoneDigits_(msg._contact_phone) !== target || !msg.recordingUrl) return;
     var startMs = parseInt(msg.startTime, 10);
+    if (startMs > latestStart) {
+      latestFromCaller = msg;
+      latestStart = startMs;
+    }
     if (aroundMs && startMs) {
       var delta = Math.abs(startMs - aroundMs);
-      if (delta > 600000) return;
+      if (delta > 1800000) return;
       if (delta < bestDelta) {
         best = msg;
         bestDelta = delta;
@@ -196,7 +203,40 @@ function findVoicemail_(caller, emailDate) {
       best = msg;
     }
   });
-  return best;
+  return best || latestFromCaller;
+}
+
+function sendLatestVoicemailNow() {
+  var messages = listVoicemailMessages_();
+  if (!messages.length) {
+    Logger.log("No voicemails in Google Voice");
+    return;
+  }
+  var msg = messages[0];
+  var caller = msg._contact_phone || "Unknown";
+  var payload = {
+    alertType: "voicemail",
+    caller: caller,
+    subject: "Voicemail from " + caller,
+    snippet: msg.messageText || "",
+    emailTimestamp: new Date(parseInt(msg.startTime, 10)).toISOString(),
+  };
+  var bytes = downloadRecording_(msg.recordingUrl);
+  if (bytes) {
+    payload.audioFileName = "voicemail-" + phoneDigits_(caller) + ".mp3";
+    payload.audioContentType = "audio/mpeg";
+    payload.audioBase64 = Utilities.base64Encode(bytes);
+    payload.audioSource = "recording";
+    Logger.log("Attached " + bytes.length + " byte recording");
+  }
+  var res = UrlFetchApp.fetch(WEBHOOK_URL, {
+    method: "post",
+    contentType: "application/json",
+    headers: { "X-Webhook-Secret": WEBHOOK_SECRET },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true,
+  });
+  Logger.log(res.getResponseCode() + " " + res.getContentText());
 }
 
 function downloadRecording_(url) {
@@ -255,12 +295,19 @@ function sendAlert_(msg) {
     if (playUrl) payload.playUrl = playUrl;
     var transcript = extractTranscript_(plain);
     if (transcript) payload.transcript = transcript;
-    var audio = tryDownloadOriginalAudio_(caller, msg.getDate());
-    if (audio) {
-      payload.audioFileName = audio.fileName;
-      payload.audioContentType = "audio/mpeg";
-      payload.audioBase64 = audio.dataBase64;
-      payload.audioSource = "recording";
+    try {
+      var audio = tryDownloadOriginalAudio_(caller, msg.getDate());
+      if (audio) {
+        payload.audioFileName = audio.fileName;
+        payload.audioContentType = "audio/mpeg";
+        payload.audioBase64 = audio.dataBase64;
+        payload.audioSource = "recording";
+        Logger.log("Attached " + audio.dataBase64.length + " chars of audio");
+      } else {
+        Logger.log("No audio matched for caller " + caller + " — sending text alert anyway");
+      }
+    } catch (e) {
+      Logger.log("Audio download error (sending text alert anyway): " + e);
     }
   }
   var res = UrlFetchApp.fetch(WEBHOOK_URL, {
