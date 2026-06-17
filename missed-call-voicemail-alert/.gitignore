@@ -1,7 +1,6 @@
 missed-call-voicemail-alert/lambda/**/__pycache__/
 missed-call-voicemail-alert/infra/node_modules/
 missed-call-voicemail-alert/infra/cdk.out/
-missed-call-voicemail-alert/infra/package-lock.json
 missed-call-voicemail-alert/infra/*.js
 missed-call-voicemail-alert/infra/*.d.ts
 missed-call-voicemail-alert/infra/lib/*.js
