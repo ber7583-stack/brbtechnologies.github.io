@@ -53,19 +53,23 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     caller = format_phone(body.get("caller", "Unknown"))
     subject = body.get("subject", "")
     snippet = body.get("snippet", "")
+    play_url = body.get("playUrl", "")
     if caller == "Unknown":
         caller = extract_caller(subject, snippet)
 
     audio_bytes, audio_name, audio_type = decode_audio(body)
     time_str = datetime.now(timezone.utc).astimezone().strftime("%b %d, %I:%M %p")
-    sms_body, email_subject, email_body = build_messages(
-        alert_type, caller, time_str, subject, has_audio=bool(audio_bytes)
+    sms_body, email_subject, email_body, email_html = build_messages(
+        alert_type, caller, time_str, subject, snippet, play_url,
+        has_audio=bool(audio_bytes),
     )
 
     phone_delivery = send_phone_alert(sms_body, audio_bytes, audio_name, audio_type, alert_type)
 
     try:
-        email_id = send_email(email_subject, email_body, audio_bytes, audio_name, audio_type, caller)
+        email_id = send_email(
+            email_subject, email_body, email_html, audio_bytes, audio_name, audio_type, caller
+        )
     except Exception as exc:
         logger.error("Email send failed: %s", exc)
         return response(
@@ -161,17 +165,22 @@ def send_phone_alert(
 def send_email(
     subject: str,
     body: str,
+    html_body: str,
     audio_bytes: bytes | None,
     audio_name: str,
     audio_type: str,
     caller: str,
 ) -> str:
     if audio_bytes:
-        msg = MIMEMultipart()
+        msg = MIMEMultipart("mixed")
         msg["Subject"] = subject
         msg["From"] = SENDER_EMAIL
         msg["To"] = RECIPIENT_EMAIL
-        msg.attach(MIMEText(body, "plain"))
+
+        alt = MIMEMultipart("alternative")
+        alt.attach(MIMEText(body, "plain"))
+        alt.attach(MIMEText(html_body, "html"))
+        msg.attach(alt)
 
         subtype = audio_type.split("/")[-1] if "/" in audio_type else "mpeg"
         attachment = MIMEApplication(audio_bytes, _subtype=subtype)
@@ -191,15 +200,24 @@ def send_email(
         Destination={"ToAddresses": [RECIPIENT_EMAIL]},
         Message={
             "Subject": {"Data": subject},
-            "Body": {"Text": {"Data": body}},
+            "Body": {
+                "Text": {"Data": body},
+                "Html": {"Data": html_body},
+            },
         },
     )
     return result["MessageId"]
 
 
 def build_messages(
-    alert_type: str, caller: str, time_str: str, gv_subject: str, has_audio: bool
-) -> tuple[str, str, str]:
+    alert_type: str,
+    caller: str,
+    time_str: str,
+    gv_subject: str,
+    snippet: str,
+    play_url: str,
+    has_audio: bool,
+) -> tuple[str, str, str, str]:
     if alert_type == "missed_call":
         sms_body = f"Missed call from {caller} at {time_str}. No voicemail left."
         email_subject = f"Missed call from {caller}"
@@ -207,28 +225,51 @@ def build_messages(
             f"Missed call alert\n\n"
             f"Caller: {caller}\n"
             f"Time: {time_str}\n"
-            f"No voicemail was left.\n\n"
-            f"Google Voice subject: {gv_subject}"
+            f"No voicemail was left.\n"
         )
+        email_html = f"<p><b>Missed call from {caller}</b><br>Time: {time_str}<br>No voicemail left.</p>"
     elif has_audio:
-        sms_body = f"Voicemail from {caller} at {time_str}. Audio attached."
+        sms_body = f"Voicemail from {caller} at {time_str}. Audio attached to email."
         email_subject = f"Voicemail from {caller}"
         email_body = (
             f"Voicemail alert\n\n"
             f"Caller: {caller}\n"
             f"Time: {time_str}\n"
-            f"The recording is attached to this email."
+            f"The recording is attached to this email.\n"
+        )
+        if play_url:
+            email_body += f"\nPlay online: {play_url}\n"
+        if snippet.strip():
+            email_body += f"\nTranscript:\n{snippet.strip()}\n"
+        link = f'<p><a href="{play_url}">Play in Google Voice</a></p>' if play_url else ""
+        email_html = (
+            f"<p><b>Voicemail from {caller}</b><br>Time: {time_str}<br>"
+            f"Recording attached.</p>{link}"
         )
     else:
-        sms_body = f"Voicemail from {caller} at {time_str}. Check Gmail for audio."
+        sms_body = f"Voicemail from {caller} at {time_str}. Play link in your email."
         email_subject = f"Voicemail from {caller}"
         email_body = (
             f"Voicemail alert\n\n"
             f"Caller: {caller}\n"
             f"Time: {time_str}\n"
-            f"Audio was not found in the Google Voice email."
         )
-    return sms_body, email_subject, email_body
+        if play_url:
+            email_body += f"\nPlay voicemail: {play_url}\n"
+        else:
+            email_body += "\nOpen Google Voice or the original Gmail message to listen.\n"
+        if snippet.strip():
+            email_body += f"\nTranscript:\n{snippet.strip()}\n"
+        link = (
+            f'<p><a href="{play_url}"><b>Click here to play voicemail</b></a></p>'
+            if play_url
+            else "<p>Open Google Voice to play this message.</p>"
+        )
+        transcript_html = f"<pre>{snippet.strip()}</pre>" if snippet.strip() else ""
+        email_html = (
+            f"<p><b>Voicemail from {caller}</b><br>Time: {time_str}</p>{link}{transcript_html}"
+        )
+    return sms_body, email_subject, email_body, email_html
 
 
 def extension_for(file_name: str) -> str:

@@ -1,5 +1,9 @@
 /**
- * Google Voice missed calls + voicemails → AWS SMS/MMS + email with audio
+ * Google Voice missed calls + voicemails → AWS SMS/MMS + email alerts
+ *
+ * Google Voice emails contain a PLAY LINK, not an audio attachment.
+ * This script tries to download audio from that link; if Google blocks it,
+ * the alert email still includes the clickable play link.
  *
  * Trigger: Time-driven → checkForVoicemailEmails → Every minute
  */
@@ -42,17 +46,60 @@ function detectAlertType_(subject, snippet) {
   return "missed_call";
 }
 
-function getVoicemailAttachment_(msg) {
-  const attachments = msg.getAttachments();
-  for (const att of attachments) {
-    const name = (att.getName() || "").toLowerCase();
-    const type = (att.getContentType() || "").toLowerCase();
-    if (/\.(mp3|wav|m4a|ogg|amr|3gp)$/.test(name) || type.indexOf("audio/") === 0) {
-      return {
-        fileName: att.getName() || "voicemail.mp3",
-        contentType: att.getContentType() || "audio/mpeg",
-        dataBase64: Utilities.base64Encode(att.getBytes()),
-      };
+/** GV emails use a play link in HTML — not a file attachment. */
+function extractVoicemailPlayUrl_(msg) {
+  const html = (msg.getBody() || "").replace(/&amp;/g, "&");
+  const plain = msg.getPlainBody() || "";
+  const blob = html + "\n" + plain;
+
+  const patterns = [
+    /https?:\/\/www\.google\.com\/voice\/fm\/[A-Za-z0-9._-]+/i,
+    /https?:\/\/voice\.google\.com\/u\/\d+\/voicemail\/[A-Za-z0-9._-]+/i,
+    /https?:\/\/voice\.google\.com\/voicemail\/[A-Za-z0-9._-]+/i,
+    /https?:\/\/account\.google\.com\/voice[^\s"'<>]*/i,
+  ];
+
+  for (var i = 0; i < patterns.length; i++) {
+    var match = blob.match(patterns[i]);
+    if (match) return match[0];
+  }
+  return null;
+}
+
+/** Try to download MP3 from GV play link (works for some accounts; Google may block). */
+function tryDownloadVoicemailAudio_(playUrl) {
+  var urls = [playUrl];
+  if (playUrl.indexOf("/voice/fm/") >= 0) {
+    urls.push(playUrl.replace("/voice/fm/", "/voice/media/svm/"));
+  }
+
+  for (var i = 0; i < urls.length; i++) {
+    try {
+      var resp = UrlFetchApp.fetch(urls[i], {
+        muteHttpExceptions: true,
+        followRedirects: true,
+        headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() },
+      });
+      if (resp.getResponseCode() !== 200) continue;
+
+      var blob = resp.getBlob();
+      var bytes = blob.getBytes();
+      if (!bytes || bytes.length < 500) continue;
+
+      var type = (blob.getContentType() || "").toLowerCase();
+      if (
+        type.indexOf("audio/") === 0 ||
+        type.indexOf("application/octet") === 0 ||
+        type.indexOf("mpeg") >= 0
+      ) {
+        return {
+          fileName: "voicemail.mp3",
+          contentType: type.indexOf("audio/") === 0 ? type : "audio/mpeg",
+          dataBase64: Utilities.base64Encode(bytes),
+        };
+      }
+    } catch (e) {
+      Logger.log("Audio download failed for " + urls[i] + ": " + e);
     }
   }
   return null;
@@ -74,7 +121,10 @@ function sendAlert_(msg) {
   };
 
   if (alertType === "voicemail") {
-    const audio = getVoicemailAttachment_(msg);
+    const playUrl = extractVoicemailPlayUrl_(msg);
+    if (playUrl) payload.playUrl = playUrl;
+
+    const audio = playUrl ? tryDownloadVoicemailAudio_(playUrl) : null;
     if (audio) {
       payload.audioFileName = audio.fileName;
       payload.audioContentType = audio.contentType;
