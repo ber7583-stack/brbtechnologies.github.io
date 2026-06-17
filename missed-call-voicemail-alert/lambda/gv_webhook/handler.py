@@ -10,7 +10,8 @@ import re
 import time
 import uuid
 from datetime import datetime, timezone
-from email.mime.application import MIMEApplication
+from email import encoders
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
@@ -69,10 +70,21 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     audio_bytes, audio_name, audio_type, audio_source = resolve_audio(
         body, alert_type, caller, email_timestamp
     )
+    recording_url = ""
+    if audio_bytes and MMS_BUCKET:
+        recording_url = store_audio_and_get_play_url(audio_bytes, audio_name, audio_type)
     time_str = datetime.now(timezone.utc).astimezone().strftime("%b %d, %I:%M %p")
     sms_body, email_subject, email_body, email_html = build_messages(
-        alert_type, caller, time_str, subject, snippet, play_url, transcript,
-        has_audio=bool(audio_bytes), audio_source=audio_source,
+        alert_type,
+        caller,
+        time_str,
+        subject,
+        snippet,
+        play_url,
+        transcript,
+        has_audio=bool(audio_bytes),
+        audio_source=audio_source,
+        recording_url=recording_url,
     )
 
     try:
@@ -99,11 +111,12 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
 
     logger.info(
-        "alert caller=%s hasAudio=%s audioBytes=%d phone=%s",
+        "alert caller=%s hasAudio=%s audioBytes=%d phone=%s hasPlayUrl=%s",
         caller,
         bool(audio_bytes),
         len(audio_bytes) if audio_bytes else 0,
         phone_delivery,
+        bool(recording_url),
     )
 
     return response(
@@ -116,6 +129,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "emailId": email_id,
             "hasAudio": bool(audio_bytes),
             "audioSource": audio_source,
+            "hasPlayUrl": bool(recording_url),
         },
     )
 
@@ -194,6 +208,29 @@ def guess_audio_type(file_name: str) -> str:
     return "audio/mpeg"
 
 
+def store_audio_and_get_play_url(
+    audio_bytes: bytes,
+    audio_name: str,
+    audio_type: str,
+) -> str:
+    key = (
+        f"recordings/{datetime.now(timezone.utc).strftime('%Y/%m/%d')}/"
+        f"{uuid.uuid4().hex}{extension_for(audio_name)}"
+    )
+    s3.put_object(
+        Bucket=MMS_BUCKET,
+        Key=key,
+        Body=audio_bytes,
+        ContentType=audio_type,
+        ContentDisposition=f'inline; filename="{audio_name}"',
+    )
+    return s3.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": MMS_BUCKET, "Key": key},
+        ExpiresIn=7 * 24 * 3600,
+    )
+
+
 def send_phone_alert(
     sms_body: str,
     audio_bytes: bytes | None,
@@ -208,7 +245,10 @@ def send_phone_alert(
         and len(audio_bytes) <= MMS_MAX_AUDIO_BYTES
     ):
         try:
-            key = f"mms/{datetime.now(timezone.utc).strftime('%Y/%m/%d')}/{uuid.uuid4().hex}{extension_for(audio_name)}"
+            key = (
+                f"mms/{datetime.now(timezone.utc).strftime('%Y/%m/%d')}/"
+                f"{uuid.uuid4().hex}{extension_for(audio_name)}"
+            )
             s3.put_object(
                 Bucket=MMS_BUCKET,
                 Key=key,
@@ -257,16 +297,19 @@ def send_email(
         alt.attach(MIMEText(html_body, "html"))
         msg.attach(alt)
 
-        subtype = audio_type.split("/")[-1] if "/" in audio_type else "mpeg"
-        attachment = MIMEApplication(audio_bytes, _subtype=subtype)
         safe_name = re.sub(r"[^\w.\-]", "_", audio_name) or f"voicemail-{caller}.mp3"
+        subtype = audio_type.split("/")[-1] if "/" in audio_type else "mpeg"
+        attachment = MIMEBase("audio", subtype)
+        attachment.set_payload(audio_bytes)
+        encoders.encode_base64(attachment)
         attachment.add_header("Content-Disposition", "attachment", filename=safe_name)
+        attachment.add_header("Content-Type", f"{audio_type}; name=\"{safe_name}\"")
         msg.attach(attachment)
 
         result = ses.send_raw_email(
             Source=SENDER_EMAIL,
             Destinations=[RECIPIENT_EMAIL],
-            RawMessage={"Data": msg.as_string()},
+            RawMessage={"Data": msg.as_bytes()},
         )
         return result["MessageId"]
 
@@ -294,6 +337,7 @@ def build_messages(
     transcript: str,
     has_audio: bool,
     audio_source: str,
+    recording_url: str = "",
 ) -> tuple[str, str, str, str]:
     if alert_type == "missed_call":
         sms_body = f"Missed call from {caller} at {time_str}. No voicemail left."
@@ -308,22 +352,37 @@ def build_messages(
         return sms_body, email_subject, email_body, email_html
 
     email_subject = f"Voicemail from {caller}"
-    link = (
-        f'<p><a href="{play_url}"><b>Play original recording in Google Voice</b></a></p>'
-        if play_url
+    listen_url = recording_url or play_url
+    listen_link = (
+        f'<p style="margin:20px 0;"><a href="{listen_url}" '
+        f'style="display:inline-block;padding:14px 24px;background:#1a73e8;'
+        f'color:#fff;text-decoration:none;border-radius:6px;font-size:18px;">'
+        f"<b>▶ Play voicemail</b></a></p>"
+        if listen_url
+        else ""
+    )
+    gv_link = (
+        f'<p><a href="{play_url}">Also open in Google Voice</a></p>'
+        if play_url and play_url != listen_url
         else ""
     )
     transcript_block = transcript.strip() or snippet.strip()
 
     if has_audio and audio_source == "recording":
-        sms_body = f"Voicemail from {caller} at {time_str}. Recording attached."
+        sms_body = (
+            f"Voicemail from {caller} at {time_str}. "
+            f"Tap Play in your email ({RECIPIENT_EMAIL})."
+        )
         email_body = (
-            f"Voicemail alert\n\nCaller: {caller}\nTime: {time_str}\n"
-            f"The original recording is attached.\n"
+            f"Voicemail alert\n\nCaller: {caller}\nTime: {time_str}\n\n"
+            f"Play the original recording:\n{listen_url}\n\n"
+            f"The MP3 is also attached to this email.\n"
         )
         email_html = (
-            f"<p><b>Voicemail from {caller}</b><br>Time: {time_str}<br>"
-            f"Original recording attached.</p>{link}"
+            f"<p><b>Voicemail from {caller}</b><br>Time: {time_str}</p>"
+            f"{listen_link}"
+            f"<p>Original caller audio (MP3 also attached).</p>"
+            f"{gv_link}"
         )
     else:
         sms_body = f"Voicemail from {caller} at {time_str}. Play link in your email."
@@ -331,20 +390,15 @@ def build_messages(
             f"Voicemail alert\n\nCaller: {caller}\nTime: {time_str}\n"
             f"Could not attach the original recording automatically.\n"
         )
-        if play_url:
-            email_body += f"\nPlay voicemail: {play_url}\n"
+        if listen_url:
+            email_body += f"\nPlay voicemail: {listen_url}\n"
         if transcript_block:
             email_body += f"\nTranscript:\n{transcript_block}\n"
-        email_body += (
-            "\nTo enable auto-attachment of original recordings, run:\n"
-            "  python3 scripts/gv-session-login.py\n"
-            "  bash scripts/upload-gv-session.sh\n"
-        )
         transcript_html = f"<pre>{transcript_block}</pre>" if transcript_block else ""
         email_html = (
             f"<p><b>Voicemail from {caller}</b><br>Time: {time_str}<br>"
             f"Original recording not attached — use the play link below.</p>"
-            f"{link}{transcript_html}"
+            f"{listen_link}{gv_link}{transcript_html}"
         )
 
     return sms_body, email_subject, email_body, email_html

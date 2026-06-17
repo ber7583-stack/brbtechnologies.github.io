@@ -172,6 +172,9 @@ function listVoicemailMessages_() {
       }
     });
   });
+  out.sort(function (a, b) {
+    return parseInt(b.startTime, 10) - parseInt(a.startTime, 10);
+  });
   return out;
 }
 
@@ -320,9 +323,15 @@ function sendAlert_(msg) {
         payload.audioContentType = "audio/mpeg";
         payload.audioBase64 = audio.dataBase64;
         payload.audioSource = "recording";
-        Logger.log("Attached " + audio.dataBase64.length + " chars of audio");
+        Logger.log(
+          "Attached recording for " +
+            caller +
+            " (" +
+            Math.round(audio.dataBase64.length * 0.75) +
+            " bytes)"
+        );
       } else {
-        Logger.log("No audio matched for caller " + caller + " — sending text alert anyway");
+        Logger.log("No audio for caller " + caller + " — check GV_COOKIES or run testDownloadAudio");
       }
     } catch (e) {
       Logger.log("Audio download error (sending text alert anyway): " + e);
