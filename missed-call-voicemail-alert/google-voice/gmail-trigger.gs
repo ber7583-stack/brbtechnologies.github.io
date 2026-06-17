@@ -1,26 +1,52 @@
 /**
  * Google Voice voicemail → AWS SMS alert
  *
- * Setup (one time):
- * 1. script.google.com → New project → paste this file
- * 2. Set WEBHOOK_URL and WEBHOOK_SECRET below (from AWS deploy output)
- * 3. Triggers → Add → run triggerVoicemailAlert → From Gmail → email received
- * 4. Filter: from:(txt.voice.google.com OR voice-noreply@google.com OR @txt.voice.google.com)
+ * Setup:
+ * 1. script.google.com → New project → paste this code into Code.gs → Save
+ * 2. Triggers → Add Trigger:
+ *      Function: checkForVoicemailEmails
+ *      Event source: Time-driven
+ *      Type: Minutes timer → Every minute
+ * 3. Approve permissions when asked
  */
 
 const WEBHOOK_URL = "https://7wo4ekjym9.execute-api.us-east-1.amazonaws.com/webhook";
 const WEBHOOK_SECRET = "JDZwDjkR62dt1RyMG6VEMW2Sq2BfHt99";
+const PROCESSED_LABEL = "voicemail-sms-alerted";
 
-function triggerVoicemailAlert(e) {
-  if (!e || !e.messages || e.messages.length === 0) return;
+/** Runs every minute via time trigger. Checks Gmail for new Google Voice voicemails. */
+function checkForVoicemailEmails() {
+  ensureLabel_();
 
-  const msg = e.messages[0];
+  const query =
+    "from:(txt.voice.google.com OR voice-noreply@google.com) is:unread -label:" +
+    PROCESSED_LABEL;
+  const threads = GmailApp.search(query, 0, 20);
+
+  for (const thread of threads) {
+    const messages = thread.getMessages();
+    for (const msg of messages) {
+      if (!isVoicemailEmail_(msg) || wasProcessed_(msg.getId())) continue;
+      sendAlert_(msg);
+      markProcessed_(thread, msg.getId());
+    }
+  }
+}
+
+/** Run once manually (Run button) to test without waiting for the timer. */
+function testCheckNow() {
+  checkForVoicemailEmails();
+}
+
+function isVoicemailEmail_(msg) {
+  const from = msg.getFrom() || "";
+  const subject = msg.getSubject() || "";
+  return /voice\.google|txt\.voice\.google/i.test(from + subject);
+}
+
+function sendAlert_(msg) {
   const subject = msg.getSubject() || "";
   const snippet = msg.getPlainBody().substring(0, 500);
-  const from = msg.getFrom() || "";
-
-  if (!/voice\.google|txt\.voice\.google/i.test(from + subject)) return;
-
   const callerMatch = (subject + " " + snippet).match(
     /\+?1?\s*\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/
   );
@@ -41,4 +67,23 @@ function triggerVoicemailAlert(e) {
 
   const res = UrlFetchApp.fetch(WEBHOOK_URL, options);
   Logger.log(res.getResponseCode() + " " + res.getContentText());
+}
+
+function ensureLabel_() {
+  const labels = GmailApp.getUserLabels();
+  for (const label of labels) {
+    if (label.getName() === PROCESSED_LABEL) return;
+  }
+  GmailApp.createLabel(PROCESSED_LABEL);
+}
+
+function wasProcessed_(messageId) {
+  const key = "processed:" + messageId;
+  return PropertiesService.getScriptProperties().getProperty(key) === "1";
+}
+
+function markProcessed_(thread, messageId) {
+  const label = GmailApp.getUserLabelByName(PROCESSED_LABEL);
+  if (label) thread.addLabel(label);
+  PropertiesService.getScriptProperties().setProperty("processed:" + messageId, "1");
 }

@@ -20,43 +20,62 @@ In [voice.google.com](https://voice.google.com) → Settings → Voicemail → t
 
 ### 3. Gmail Apps Script — trigger SMS alert
 
-This is a small program that lives inside your Gmail account. When Google Voice emails you a voicemail, it automatically tells AWS to text your phone.
+This is a small program inside your Gmail. Every minute it checks for new Google Voice voicemail emails and texts your phone.
+
+> **Note:** Google removed the old “From Gmail” trigger. Use **Time-driven** instead (checks every minute).
 
 **Step A — Open the editor**
 
-1. Go to [script.google.com](https://script.google.com) in your browser (use the same Google account as `ber7583@gmail.com`)
-2. Click the blue **New project** button (top left)
-3. You’ll see a blank file called `Code.gs` with a few lines of sample code
-4. Click inside that file, press **Ctrl+A** (or **Cmd+A** on Mac) to select everything, then **Delete** so the file is empty
+1. Go to [script.google.com](https://script.google.com) (log in as `ber7583@gmail.com`)
+2. Click **New project**
+3. Select all text in `Code.gs` (**Ctrl+A** / **Cmd+A**) and **Delete**
 
 **Step B — Paste this code**
 
-Copy **all** of the code below (from `const WEBHOOK_URL` through the last `}`) and paste it into the empty `Code.gs` file:
+Copy everything below and paste into `Code.gs`:
 
 ```javascript
 const WEBHOOK_URL = "https://7wo4ekjym9.execute-api.us-east-1.amazonaws.com/webhook";
 const WEBHOOK_SECRET = "JDZwDjkR62dt1RyMG6VEMW2Sq2BfHt99";
+const PROCESSED_LABEL = "voicemail-sms-alerted";
 
-function triggerVoicemailAlert(e) {
-  if (!e || !e.messages || e.messages.length === 0) return;
+function checkForVoicemailEmails() {
+  ensureLabel_();
+  const query =
+    "from:(txt.voice.google.com OR voice-noreply@google.com) is:unread -label:" +
+    PROCESSED_LABEL;
+  const threads = GmailApp.search(query, 0, 20);
+  for (const thread of threads) {
+    const messages = thread.getMessages();
+    for (const msg of messages) {
+      if (!isVoicemailEmail_(msg) || wasProcessed_(msg.getId())) continue;
+      sendAlert_(msg);
+      markProcessed_(thread, msg.getId());
+    }
+  }
+}
 
-  const msg = e.messages[0];
+function testCheckNow() {
+  checkForVoicemailEmails();
+}
+
+function isVoicemailEmail_(msg) {
+  const from = msg.getFrom() || "";
+  const subject = msg.getSubject() || "";
+  return /voice\.google|txt\.voice\.google/i.test(from + subject);
+}
+
+function sendAlert_(msg) {
   const subject = msg.getSubject() || "";
   const snippet = msg.getPlainBody().substring(0, 500);
-  const from = msg.getFrom() || "";
-
-  if (!/voice\.google|txt\.voice\.google/i.test(from + subject)) return;
-
   const callerMatch = (subject + " " + snippet).match(
     /\+?1?\s*\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/
   );
-
   const payload = {
     caller: callerMatch ? callerMatch[0] : "Unknown",
     subject: subject,
     snippet: snippet,
   };
-
   const options = {
     method: "post",
     contentType: "application/json",
@@ -64,32 +83,55 @@ function triggerVoicemailAlert(e) {
     payload: JSON.stringify(payload),
     muteHttpExceptions: true,
   };
-
   const res = UrlFetchApp.fetch(WEBHOOK_URL, options);
   Logger.log(res.getResponseCode() + " " + res.getContentText());
 }
+
+function ensureLabel_() {
+  const labels = GmailApp.getUserLabels();
+  for (const label of labels) {
+    if (label.getName() === PROCESSED_LABEL) return;
+  }
+  GmailApp.createLabel(PROCESSED_LABEL);
+}
+
+function wasProcessed_(messageId) {
+  return PropertiesService.getScriptProperties().getProperty("processed:" + messageId) === "1";
+}
+
+function markProcessed_(thread, messageId) {
+  const label = GmailApp.getUserLabelByName(PROCESSED_LABEL);
+  if (label) thread.addLabel(label);
+  PropertiesService.getScriptProperties().setProperty("processed:" + messageId, "1");
+}
 ```
 
-5. Click the **Save** icon (floppy disk) or press **Ctrl+S**
-6. Name the project something like `Voicemail SMS Alert` when prompted
+4. Click **Save** (floppy disk icon)
+5. Name the project `Voicemail SMS Alert`
 
-**Step C — Turn it on (add a trigger)**
+**Step C — Add the trigger (what you see in your screenshot)**
 
-1. In the left sidebar, click the **clock icon** labeled **Triggers**
-2. Click **+ Add Trigger** (bottom right)
-3. Fill in exactly:
-   - **Choose which function to run:** `triggerVoicemailAlert`
-   - **Choose which deployment should run:** `Head`
-   - **Select event source:** `From Gmail`
-   - **Select event type:** `Email received`
-   - **Gmail account:** your `ber7583@gmail.com` account
-   - **Error notification settings:** `Notify me immediately` (recommended)
+1. Click the **clock icon** (Triggers) on the left
+2. Click **+ Add Trigger**
+3. Set these exactly:
+
+| Field | Pick this |
+|-------|-----------|
+| Choose which function to run | `checkForVoicemailEmails` |
+| Choose which deployment should run | `Head` |
+| Select event source | **Time-driven** |
+| Select type of time based trigger | **Minutes timer** |
+| Select minute interval | **Every minute** |
+| Failure notification settings | Notify me immediately |
+
 4. Click **Save**
-5. Google will ask you to **Allow** permissions — click through and approve (this lets the script read new Gmail messages and send the alert)
+5. Google asks for permission → click **Allow** (lets it read Gmail and send the alert)
 
 **Step D — Test it**
 
-Leave yourself a voicemail on Google Voice. Within a minute you should get an SMS on `347-798-7583` saying who called.
+1. At the top, change the function dropdown from `checkForVoicemailEmails` to **`testCheckNow`**
+2. Click **Run** (play button) — approve permissions if asked again
+3. Leave yourself a Google Voice voicemail, wait up to 1 minute, check for SMS on `347-798-7583`
 
 ---
 
