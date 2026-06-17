@@ -39,10 +39,24 @@ class GvSessionError(Exception):
 
 def load_session(secret_json: str) -> list[dict[str, Any]]:
     data = json.loads(secret_json or "{}")
-    cookies = data.get("cookies") if isinstance(data, dict) else None
+    if isinstance(data, dict):
+        cookies = data.get("cookies")
+    elif isinstance(data, list):
+        cookies = data
+    else:
+        cookies = None
     if not cookies:
         raise GvSessionError("Google Voice session not configured")
-    return cookies
+    return [
+        {
+            "name": c["name"],
+            "value": c["value"],
+            "domain": c.get("domain", ".google.com"),
+            "path": c.get("path", "/"),
+        }
+        for c in cookies
+        if c.get("name") and c.get("value")
+    ]
 
 
 def phone_digits(number: str) -> str:
