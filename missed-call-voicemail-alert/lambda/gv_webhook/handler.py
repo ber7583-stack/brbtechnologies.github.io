@@ -183,7 +183,6 @@ def send_phone_alert(
                 OriginationIdentity=ORIGINATION_IDENTITY,
                 MessageBody=sms_body,
                 MediaUrls=[f"s3://{MMS_BUCKET}/{key}"],
-                MessageType="TRANSACTIONAL",
             )
             return f"mms:{result['MessageId']}"
         except ClientError as exc:
