@@ -27,16 +27,5 @@ echo "=== Deploying stack ==="
 npm run deploy
 
 echo ""
-echo "=== Post-deploy manual steps ==="
-cat <<'EOF'
-1. Amazon Connect console → your new instance:
-   - Claim a US DID (inbound voicemail number, ~$1/mo)
-   - Data storage → Call recordings → enable, point to RecordingsBucket output
-   - Phone numbers → assign MissedCallVoicemail contact flow to the DID
-2. End User Messaging → Phone numbers → +19452025796:
-   - Two-way SMS → inbound messages → SNS topic (InboundSmsTopicArn output)
-3. On your cell phone (+13477987583):
-   - Settings → Phone → Call Forwarding → No Answer → Connect DID
-   - Use 20–25 second ring delay so you can answer locally first
-4. Run: bash scripts/test-e2e.sh
-EOF
+echo "=== Post-deploy AWS setup ==="
+bash "$ROOT/scripts/complete-aws-setup.sh"

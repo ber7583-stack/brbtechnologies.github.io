@@ -10,5 +10,5 @@ new MissedCallVoicemailStack(app, "MissedCallVoicemailAlert", {
     region: process.env.CDK_DEFAULT_REGION ?? "us-east-1",
   },
   description:
-    "Personal missed-call voicemail alerts via Amazon Connect + AWS 10DLC MMS",
+    "Personal missed-call voicemail alerts via Google Voice + AWS 10DLC SMS",
 });

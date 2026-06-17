@@ -2,12 +2,11 @@
   "recipientPhone": "+13477987583",
   "recipientEmail": "ber7583@gmail.com",
   "senderEmail": "ber7583@gmail.com",
+  "googleVoiceNumber": "+17249126268",
   "originationIdentity": "+19452025796",
   "brandId": "B9JC7EP",
   "campaignId": "CJDA4Y5",
   "awsRegion": "us-east-1",
-  "maxVoicemailSeconds": 60,
-  "recordingRetentionDays": 30,
   "mmsMaxAudioBytes": 614400,
   "helpMessage": "Missed-call alerts: transactional voicemail notifications to your phone. Reply STOP to opt out. Msg&data rates may apply.",
   "stopMessage": "You are unsubscribed from missed-call alerts. Reply START to re-enable."
