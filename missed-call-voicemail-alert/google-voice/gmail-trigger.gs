@@ -1,5 +1,5 @@
 /**
- * Google Voice missed calls + voicemails → AWS SMS + email alerts
+ * Google Voice missed calls + voicemails → AWS SMS/MMS + email with audio
  *
  * Trigger: Time-driven → checkForVoicemailEmails → Every minute
  */
@@ -7,7 +7,6 @@
 const WEBHOOK_URL = "https://7wo4ekjym9.execute-api.us-east-1.amazonaws.com/webhook";
 const WEBHOOK_SECRET = "JDZwDjkR62dt1RyMG6VEMW2Sq2BfHt99";
 
-/** Runs every minute. Checks Gmail for Google Voice missed-call and voicemail emails. */
 function checkForVoicemailEmails() {
   const query =
     "from:(txt.voice.google.com OR voice-noreply@google.com) newer_than:2d";
@@ -23,7 +22,6 @@ function checkForVoicemailEmails() {
   }
 }
 
-/** Run manually from the editor to test right away. */
 function testCheckNow() {
   checkForVoicemailEmails();
 }
@@ -44,19 +42,45 @@ function detectAlertType_(subject, snippet) {
   return "missed_call";
 }
 
+function getVoicemailAttachment_(msg) {
+  const attachments = msg.getAttachments();
+  for (const att of attachments) {
+    const name = (att.getName() || "").toLowerCase();
+    const type = (att.getContentType() || "").toLowerCase();
+    if (/\.(mp3|wav|m4a|ogg|amr|3gp)$/.test(name) || type.indexOf("audio/") === 0) {
+      return {
+        fileName: att.getName() || "voicemail.mp3",
+        contentType: att.getContentType() || "audio/mpeg",
+        dataBase64: Utilities.base64Encode(att.getBytes()),
+      };
+    }
+  }
+  return null;
+}
+
 function sendAlert_(msg) {
   const subject = msg.getSubject() || "";
   const snippet = msg.getPlainBody().substring(0, 500);
   const callerMatch = (subject + " " + snippet).match(
     /\+?1?\s*\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/
   );
+  const alertType = detectAlertType_(subject, snippet);
 
   const payload = {
-    alertType: detectAlertType_(subject, snippet),
+    alertType: alertType,
     caller: callerMatch ? callerMatch[0] : "Unknown",
     subject: subject,
     snippet: snippet,
   };
+
+  if (alertType === "voicemail") {
+    const audio = getVoicemailAttachment_(msg);
+    if (audio) {
+      payload.audioFileName = audio.fileName;
+      payload.audioContentType = audio.contentType;
+      payload.audioBase64 = audio.dataBase64;
+    }
+  }
 
   const options = {
     method: "post",
@@ -86,7 +110,6 @@ function markProcessed_(messageId) {
   PropertiesService.getScriptProperties().setProperty("processed:" + messageId, "1");
 }
 
-/** One-time: clear stored IDs so old emails can alert again. Run once, then delete this call. */
 function resetProcessed() {
   PropertiesService.getScriptProperties().deleteAllProperties();
 }

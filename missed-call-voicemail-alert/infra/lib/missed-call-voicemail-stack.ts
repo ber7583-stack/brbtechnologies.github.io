@@ -4,6 +4,7 @@ import * as apigatewayIntegrations from "aws-cdk-lib/aws-apigatewayv2-integratio
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
+import * as s3 from "aws-cdk-lib/aws-s3";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as subs from "aws-cdk-lib/aws-sns-subscriptions";
@@ -33,13 +34,25 @@ export class MissedCallVoicemailStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    const mmsBucket = new s3.Bucket(this, "MmsMedia", {
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      lifecycleRules: [
+        { id: "expire-mms-audio", expiration: cdk.Duration.days(7) },
+      ],
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+    });
+
     const gvWebhookFn = new lambda.Function(this, "GvWebhook", {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "handler.handler",
       code: lambda.Code.fromAsset(
         path.join(__dirname, "../../lambda/gv_webhook")
       ),
-      timeout: cdk.Duration.seconds(30),
+      timeout: cdk.Duration.seconds(60),
+      memorySize: 256,
       environment: {
         RECIPIENT_PHONE: CONFIG.recipientPhone,
         RECIPIENT_EMAIL: CONFIG.recipientEmail,
@@ -47,19 +60,33 @@ export class MissedCallVoicemailStack extends cdk.Stack {
         ORIGINATION_IDENTITY: CONFIG.originationIdentity,
         WEBHOOK_SECRET: webhookSecret.secretValue.unsafeUnwrap(),
         OPT_OUT_TABLE: optOutTable.tableName,
+        MMS_BUCKET: mmsBucket.bucketName,
+        MMS_MAX_AUDIO_BYTES: String(CONFIG.mmsMaxAudioBytes),
       },
     });
 
     optOutTable.grantReadData(gvWebhookFn);
+    mmsBucket.grantReadWrite(gvWebhookFn);
+    mmsBucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: "AllowSmsVoiceMmsRead",
+        principals: [new iam.ServicePrincipal("sms-voice.amazonaws.com")],
+        actions: ["s3:GetObject"],
+        resources: [mmsBucket.arnForObjects("*")],
+        conditions: {
+          StringEquals: { "aws:SourceAccount": this.account },
+        },
+      })
+    );
     gvWebhookFn.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ["sms-voice:SendTextMessage"],
+        actions: ["sms-voice:SendTextMessage", "sms-voice:SendMediaMessage"],
         resources: ["*"],
       })
     );
     gvWebhookFn.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ["ses:SendEmail"],
+        actions: ["ses:SendEmail", "ses:SendRawEmail"],
         resources: ["*"],
       })
     );
