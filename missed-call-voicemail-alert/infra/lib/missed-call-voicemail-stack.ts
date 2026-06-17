@@ -1,12 +1,10 @@
 import * as cdk from "aws-cdk-lib";
 import * as connect from "aws-cdk-lib/aws-connect";
-import * as cr from "aws-cdk-lib/custom-resources";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3n from "aws-cdk-lib/aws-s3-notifications";
-import * as ses from "aws-cdk-lib/aws-ses";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as subs from "aws-cdk-lib/aws-sns-subscriptions";
 import { Construct } from "constructs";
@@ -82,10 +80,7 @@ export class MissedCallVoicemailStack extends cdk.Stack {
       autoDeleteObjects: true,
     });
 
-    new ses.CfnEmailIdentity(this, "SenderEmail", {
-      emailIdentity: CONFIG.senderEmail,
-    });
-
+    // SES identity created outside stack (ber7583@gmail.com)
     const optOutTable = new dynamodb.Table(this, "SmsOptOut", {
       partitionKey: { name: "phone", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -201,58 +196,6 @@ export class MissedCallVoicemailStack extends cdk.Stack {
       state: "ACTIVE",
     });
 
-    const inboundDid = new connect.CfnPhoneNumber(this, "InboundDid", {
-      targetArn: connectInstance.attrArn,
-      countryCode: "US",
-      type: "DID",
-      description: "Missed-call voicemail inbound number",
-    });
-    inboundDid.addDependency(connectInstance);
-
-    const instanceId = cdk.Fn.select(
-      1,
-      cdk.Fn.split("/instance/", connectInstance.attrArn)
-    );
-    const contactFlowId = cdk.Fn.select(
-      1,
-      cdk.Fn.split("/contact-flow/", voicemailFlow.attrContactFlowArn)
-    );
-    const phoneNumberId = cdk.Fn.select(
-      1,
-      cdk.Fn.split("/phone-number/", inboundDid.attrPhoneNumberArn)
-    );
-
-    const associateDidFlow = new cr.AwsCustomResource(this, "AssociateInboundDidFlow", {
-      onCreate: {
-        service: "Connect",
-        action: "associatePhoneNumberContactFlow",
-        parameters: {
-          InstanceId: instanceId,
-          PhoneNumberId: phoneNumberId,
-          ContactFlowId: contactFlowId,
-        },
-        physicalResourceId: cr.PhysicalResourceId.of("inbound-did-flow-assoc"),
-      },
-      onUpdate: {
-        service: "Connect",
-        action: "associatePhoneNumberContactFlow",
-        parameters: {
-          InstanceId: instanceId,
-          PhoneNumberId: phoneNumberId,
-          ContactFlowId: contactFlowId,
-        },
-        physicalResourceId: cr.PhysicalResourceId.of("inbound-did-flow-assoc"),
-      },
-      policy: cr.AwsCustomResourcePolicy.fromSdkCalls({
-        resources: [
-          connectInstance.attrArn,
-          `${connectInstance.attrArn}/*`,
-        ],
-      }),
-    });
-    associateDidFlow.node.addDependency(inboundDid);
-    associateDidFlow.node.addDependency(voicemailFlow);
-
     const recordingsStorage = new connect.CfnInstanceStorageConfig(
       this,
       "CallRecordingsStorage",
@@ -268,35 +211,11 @@ export class MissedCallVoicemailStack extends cdk.Stack {
     );
     recordingsStorage.addDependency(connectInstance);
 
-    new cr.AwsCustomResource(this, "EnableTwoWaySms", {
-      onCreate: {
-        service: "PinpointSMSVoiceV2",
-        action: "updatePhoneNumber",
-        parameters: {
-          PhoneNumberId: CONFIG.originationIdentity,
-          TwoWayEnabled: true,
-          TwoWayChannelArn: inboundTopic.topicArn,
-        },
-        physicalResourceId: cr.PhysicalResourceId.of("two-way-sms-setup"),
-      },
-      onUpdate: {
-        service: "PinpointSMSVoiceV2",
-        action: "updatePhoneNumber",
-        parameters: {
-          PhoneNumberId: CONFIG.originationIdentity,
-          TwoWayEnabled: true,
-          TwoWayChannelArn: inboundTopic.topicArn,
-        },
-        physicalResourceId: cr.PhysicalResourceId.of("two-way-sms-setup"),
-      },
-      policy: cr.AwsCustomResourcePolicy.fromSdkCalls({
-        resources: cr.AwsCustomResourcePolicy.ANY_RESOURCE,
-      }),
-    });
+    // Two-way SMS and Connect DID configured via scripts/complete-aws-setup.sh
 
     new cdk.CfnOutput(this, "ConnectInboundDid", {
-      value: inboundDid.attrAddress,
-      description: "Forward unanswered calls here (Verizon *71)",
+      value: "CLAIM_VIA_CLI_AFTER_DEPLOY",
+      description: "Run scripts/complete-aws-setup.sh after deploy",
     });
 
     new cdk.CfnOutput(this, "ConnectInstanceArn", {
