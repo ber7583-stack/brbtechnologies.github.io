@@ -17,7 +17,8 @@
       "Parameters": {
         "RecordingBehavior": {
           "RecordedParticipants": ["Customer"],
-          "ScreenRecordedParticipants": []
+          "ScreenRecordedParticipants": [],
+          "IVRRecordingBehavior": "Enabled"
         }
       },
       "Transitions": {
@@ -38,22 +39,17 @@
     },
     {
       "Identifier": "RecordVoicemail",
-      "Type": "Wait",
+      "Type": "GetParticipantInput",
       "Parameters": {
-        "TimeoutSeconds": "{{MAX_VOICEMAIL_SECONDS}}"
+        "InputTimeLimitSeconds": 60,
+        "StoreInput": "False"
       },
       "Transitions": {
         "NextAction": "Disconnect",
-        "Conditions": [
-          {
-            "NextAction": "Disconnect",
-            "Condition": {
-              "Operator": "Equals",
-              "Operands": ["WaitCompleted"]
-            }
-          }
-        ],
-        "Errors": [{ "NextAction": "Disconnect", "ErrorType": "NoMatchingError" }]
+        "Errors": [
+          { "NextAction": "Disconnect", "ErrorType": "InputTimeLimitExceeded" },
+          { "NextAction": "Disconnect", "ErrorType": "NoMatchingError" }
+        ]
       }
     },
     {

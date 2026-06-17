@@ -162,12 +162,24 @@ export class MissedCallVoicemailStack extends cdk.Stack {
     });
     inboundTopic.addSubscription(new subs.LambdaSubscription(inboundSmsFn));
 
-    const flowContent = fs
-      .readFileSync(
+    const flow = JSON.parse(
+      fs.readFileSync(
         path.join(__dirname, "../../connect/voicemail-flow.json"),
         "utf8"
       )
-      .replace(/\{\{MAX_VOICEMAIL_SECONDS\}\}/g, String(CONFIG.maxVoicemailSeconds));
+    ) as {
+      Actions: Array<{
+        Identifier: string;
+        Parameters?: { InputTimeLimitSeconds?: number };
+      }>;
+    };
+    const recordAction = flow.Actions.find(
+      (action) => action.Identifier === "RecordVoicemail"
+    );
+    if (recordAction?.Parameters) {
+      recordAction.Parameters.InputTimeLimitSeconds = CONFIG.maxVoicemailSeconds;
+    }
+    const flowContent = JSON.stringify(flow);
 
     new connect.CfnContactFlow(this, "VoicemailInboundFlow", {
       instanceArn: connectInstance.attrArn,
