@@ -14,7 +14,6 @@ echo ""
 echo "1. Phone number status and MMS capability ($ORIGINATION)"
 aws pinpoint-sms-voice-v2 describe-phone-numbers \
   --region "$REGION" \
-  --filters "PhoneNumber=${ORIGINATION}" \
   --output table
 
 echo ""

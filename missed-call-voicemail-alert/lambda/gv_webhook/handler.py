@@ -49,12 +49,24 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "Voicemail in your email (ber7583@gmail.com)."
     )
 
-    result = sms.send_text_message(
-        DestinationPhoneNumber=RECIPIENT_PHONE,
-        OriginationIdentity=ORIGINATION_IDENTITY,
-        MessageBody=message,
-        MessageType="TRANSACTIONAL",
-    )
+    try:
+        result = sms.send_text_message(
+            DestinationPhoneNumber=RECIPIENT_PHONE,
+            OriginationIdentity=ORIGINATION_IDENTITY,
+            MessageBody=message,
+            MessageType="TRANSACTIONAL",
+        )
+    except sms.exceptions.ConflictException as exc:
+        logger.error("SMS send failed: %s", exc)
+        return response(
+            502,
+            {
+                "error": "sms_failed",
+                "detail": str(exc),
+                "hint": "Verify +13477987583 in AWS SMS sandbox or request production access",
+            },
+        )
+
     return response(200, {"status": "sent", "messageId": result["MessageId"], "caller": caller})
 
 
