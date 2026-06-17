@@ -8,8 +8,8 @@
  * 4. Filter: from:(txt.voice.google.com OR voice-noreply@google.com OR @txt.voice.google.com)
  */
 
-const WEBHOOK_URL = "PASTE_WEBHOOK_URL_HERE";
-const WEBHOOK_SECRET = "PASTE_WEBHOOK_SECRET_HERE";
+const WEBHOOK_URL = "https://7wo4ekjym9.execute-api.us-east-1.amazonaws.com/webhook";
+const WEBHOOK_SECRET = "JDZwDjkR62dt1RyMG6VEMW2Sq2BfHt99";
 
 function triggerVoicemailAlert(e) {
   if (!e || !e.messages || e.messages.length === 0) return;
