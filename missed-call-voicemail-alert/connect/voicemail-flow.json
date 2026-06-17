@@ -1,0 +1,66 @@
+{
+  "Version": "2019-10-30",
+  "StartAction": "EnableRecording",
+  "Metadata": {
+    "entryPointPosition": { "x": 20, "y": 20 },
+    "ActionMetadata": {
+      "EnableRecording": { "position": { "x": 160, "y": 20 } },
+      "PlayGreeting": { "position": { "x": 320, "y": 20 } },
+      "RecordVoicemail": { "position": { "x": 480, "y": 20 } },
+      "Disconnect": { "position": { "x": 640, "y": 20 } }
+    }
+  },
+  "Actions": [
+    {
+      "Identifier": "EnableRecording",
+      "Type": "UpdateContactRecordingBehavior",
+      "Parameters": {
+        "RecordingBehavior": {
+          "RecordedParticipants": ["Customer"],
+          "ScreenRecordedParticipants": []
+        }
+      },
+      "Transitions": {
+        "NextAction": "PlayGreeting",
+        "Errors": [{ "NextAction": "Disconnect", "ErrorType": "NoMatchingError" }]
+      }
+    },
+    {
+      "Identifier": "PlayGreeting",
+      "Type": "MessageParticipant",
+      "Parameters": {
+        "Text": "The person you called is not available. Please leave a message after the tone."
+      },
+      "Transitions": {
+        "NextAction": "RecordVoicemail",
+        "Errors": [{ "NextAction": "Disconnect", "ErrorType": "NoMatchingError" }]
+      }
+    },
+    {
+      "Identifier": "RecordVoicemail",
+      "Type": "Wait",
+      "Parameters": {
+        "TimeoutSeconds": "{{MAX_VOICEMAIL_SECONDS}}"
+      },
+      "Transitions": {
+        "NextAction": "Disconnect",
+        "Conditions": [
+          {
+            "NextAction": "Disconnect",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": ["WaitCompleted"]
+            }
+          }
+        ],
+        "Errors": [{ "NextAction": "Disconnect", "ErrorType": "NoMatchingError" }]
+      }
+    },
+    {
+      "Identifier": "Disconnect",
+      "Type": "DisconnectParticipant",
+      "Parameters": {},
+      "Transitions": {}
+    }
+  ]
+}
