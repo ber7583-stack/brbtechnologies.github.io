@@ -1,24 +1,28 @@
 # Missed-call voicemail alert
 
-Standalone — not PingTweets.
+## One-time setup (you do this once, not per agent)
 
-Every voicemail → **email with MP3** + phone MMS/text. No links.
+### 1. GitHub secrets
+Repo → **Settings → Secrets and variables → Actions → New repository secret**
 
-## Deploy (agent does this)
+| Name | Value |
+|------|--------|
+| `AWS_ACCESS_KEY_ID` | your key |
+| `AWS_SECRET_ACCESS_KEY` | your secret |
 
-```bash
-cd missed-call-voicemail-alert/infra && npm ci && npm run deploy
-```
+### 2. Deploy
+Merge PR to `main`, or run **Actions → Deploy missed-call voicemail → Run workflow**.
 
-CDK handles Connect DID, recordings, contact flow, SES, inbound SMS.
+No Cursor agent needed for deploy after this.
 
-## You only do (phone + email)
+---
+
+## You only do on phone/email
 
 1. **Gmail** — click AWS SES verification link for `ber7583@gmail.com`
-2. **Verizon** — forward unanswered calls to **ConnectInboundDid** (stack output):
-   - `*71` + DID + `#`
-   - Turn off Verizon voicemail first (`*86`)
+2. **Verizon** — `*71` + Connect DID from GitHub Actions output + `#`
+3. Turn off Verizon voicemail (`*86`)
 
-## Greeting
+## What CDK deploys automatically
 
-> The person you called at 3 4 7, 7 9 8, 7 5 8 3 is not available. Please leave a message after the tone.
+Connect DID, voicemail flow, recordings bucket, SES identity, inbound SMS → SNS, email + MMS alerts.
