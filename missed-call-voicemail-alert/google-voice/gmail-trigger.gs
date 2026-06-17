@@ -6,15 +6,11 @@
 
 const WEBHOOK_URL = "https://7wo4ekjym9.execute-api.us-east-1.amazonaws.com/webhook";
 const WEBHOOK_SECRET = "JDZwDjkR62dt1RyMG6VEMW2Sq2BfHt99";
-const PROCESSED_LABEL = "voicemail-sms-alerted";
 
 /** Runs every minute. Checks Gmail for Google Voice missed-call and voicemail emails. */
 function checkForVoicemailEmails() {
-  ensureLabel_();
-
   const query =
-    "from:(txt.voice.google.com OR voice-noreply@google.com) newer_than:2d -label:" +
-    PROCESSED_LABEL;
+    "from:(txt.voice.google.com OR voice-noreply@google.com) newer_than:2d";
   const threads = GmailApp.search(query, 0, 20);
 
   for (const thread of threads) {
@@ -22,7 +18,7 @@ function checkForVoicemailEmails() {
     for (const msg of messages) {
       if (!isGoogleVoiceEmail_(msg) || wasProcessed_(msg.getId())) continue;
       sendAlert_(msg);
-      markProcessed_(thread, msg.getId());
+      markProcessed_(msg.getId());
     }
   }
 }
@@ -35,13 +31,10 @@ function testCheckNow() {
 function isGoogleVoiceEmail_(msg) {
   const from = msg.getFrom() || "";
   const subject = msg.getSubject() || "";
-  const text = (from + " " + subject).toLowerCase();
-  return (
-    /voice\.google|txt\.voice\.google/.test(text) &&
-    (/missed call|voicemail|voice message|new text message from/.test(
-      (subject + " " + msg.getPlainBody().substring(0, 300)).toLowerCase()
-    ))
-  );
+  const body = msg.getPlainBody().substring(0, 300).toLowerCase();
+  const text = (from + " " + subject + " " + body).toLowerCase();
+  if (!/voice\.google|txt\.voice\.google/.test(text)) return false;
+  return /missed call|voicemail|voice message|new text message from/.test(text);
 }
 
 function detectAlertType_(subject, snippet) {
@@ -82,14 +75,6 @@ function sendAlert_(msg) {
   }
 }
 
-function ensureLabel_() {
-  const labels = GmailApp.getUserLabels();
-  for (const label of labels) {
-    if (label.getName() === PROCESSED_LABEL) return;
-  }
-  GmailApp.createLabel(PROCESSED_LABEL);
-}
-
 function wasProcessed_(messageId) {
   return (
     PropertiesService.getScriptProperties().getProperty("processed:" + messageId) ===
@@ -97,8 +82,11 @@ function wasProcessed_(messageId) {
   );
 }
 
-function markProcessed_(thread, messageId) {
-  const label = GmailApp.getUserLabelByName(PROCESSED_LABEL);
-  if (label) thread.addLabel(label);
+function markProcessed_(messageId) {
   PropertiesService.getScriptProperties().setProperty("processed:" + messageId, "1");
+}
+
+/** One-time: clear stored IDs so old emails can alert again. Run once, then delete this call. */
+function resetProcessed() {
+  PropertiesService.getScriptProperties().deleteAllProperties();
 }
