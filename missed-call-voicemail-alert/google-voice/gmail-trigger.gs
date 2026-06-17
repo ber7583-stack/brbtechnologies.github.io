@@ -179,13 +179,10 @@ function gvHeaders_(cookies) {
 }
 
 function gvPost_(endpoint, body) {
-  var cookies = getCookieList_();
-  if (!cookies) return null;
   var url = GV_API_BASE + endpoint + "?alt=json&key=" + GV_API_KEY;
   var resp = UrlFetchApp.fetch(url, {
     method: "post",
-    contentType: "application/json",
-    headers: gvHeaders_(cookies),
+    headers: gvHeaders_(getCookieList_()),
     payload: JSON.stringify(body),
     muteHttpExceptions: true,
   });
