@@ -83,11 +83,12 @@ export class MissedCallVoicemailStack extends cdk.Stack {
       memorySize: 512,
       environment: {
         RECIPIENT_PHONE: CONFIG.recipientPhone,
+        RECIPIENT_EMAIL: CONFIG.recipientEmail,
+        SENDER_EMAIL: CONFIG.senderEmail,
         ORIGINATION_IDENTITY: CONFIG.originationIdentity,
         MMS_BUCKET: mmsBucket.bucketName,
         CONNECT_INSTANCE_ARN: connectInstance.attrArn,
         OPT_OUT_TABLE: optOutTable.tableName,
-        PRESIGNED_URL_EXPIRY_DAYS: String(CONFIG.presignedUrlExpiryDays),
         MMS_MAX_AUDIO_BYTES: String(CONFIG.mmsMaxAudioBytes),
       },
       layers: ffmpegLayerArn
@@ -115,6 +116,13 @@ export class MissedCallVoicemailStack extends cdk.Stack {
     processVoicemailFn.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["sms-voice:SendMediaMessage", "sms-voice:SendTextMessage"],
+        resources: ["*"],
+      })
+    );
+
+    processVoicemailFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["ses:SendRawEmail", "ses:SendEmail"],
         resources: ["*"],
       })
     );
