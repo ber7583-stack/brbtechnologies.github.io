@@ -2,18 +2,15 @@
 
 ## Do NOT deploy GitHub Pages for voicemail tasks
 
-This repo also contains `missed-call-voicemail-alert/` — a separate AWS project.
+Deploy `missed-call-voicemail-alert/` to AWS only.
 
-## To deploy missed-call voicemail alerts
+```bash
+aws sts get-caller-identity
+cd missed-call-voicemail-alert/infra && npm ci && npm run deploy
+```
 
-1. Verify AWS creds: `aws sts get-caller-identity`
-2. Deploy:
-   ```bash
-   cd missed-call-voicemail-alert/infra && npm ci && npm run deploy
-   ```
-3. Post-deploy (AWS console/CLI):
-   - SES: verify `ber7583@gmail.com`
-   - Connect: claim US DID, enable recordings → S3 bucket from stack output, assign **MissedCallVoicemail** flow
-   - End User Messaging: inbound SMS on +19452025796 → SNS topic from stack output
+CDK automates: Connect DID, recordings bucket, contact flow, SES identity, inbound SMS → SNS.
+
+**User only does:** click SES verification email + Verizon call forward to `ConnectInboundDid` output.
 
 Region: `us-east-1`

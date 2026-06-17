@@ -2,33 +2,23 @@
 
 Standalone — not PingTweets.
 
-**Every voicemail → email with MP3 attached** (play on any device). Phone gets MMS if small enough, else a short text pointing to email. No links.
+Every voicemail → **email with MP3** + phone MMS/text. No links.
 
-## Flow
+## Deploy (agent does this)
 
-Missed call → Connect DID → voicemail → S3 → Lambda → **email + MMS/SMS**
+```bash
+cd missed-call-voicemail-alert/infra && npm ci && npm run deploy
+```
 
-## Setup
+CDK handles Connect DID, recordings, contact flow, SES, inbound SMS.
 
-1. Edit `config/defaults.json` — set `recipientEmail` and `senderEmail` (verify sender in SES console).
-2. `bash scripts/deploy.sh`
-3. Connect console: claim DID, enable recordings, assign **MissedCallVoicemail** flow.
-4. Phone: forward **when unanswered** to Connect DID (~25s ring).
-5. End User Messaging: wire inbound SMS to SNS topic from stack output.
+## You only do (phone + email)
 
-## Phone vs email
+1. **Gmail** — click AWS SES verification link for `ber7583@gmail.com`
+2. **Verizon** — forward unanswered calls to **ConnectInboundDid** (stack output):
+   - `*71` + DID + `#`
+   - Turn off Verizon voicemail first (`*86`)
 
-| Channel | What you get |
-|---------|--------------|
-| **Email** | Always — MP3 attachment, any size up to SES limits |
-| **Phone** | MMS with audio if ≤600 KB, else text only ("check email") |
+## Greeting
 
-Max voicemail: **60 seconds** recommended.
-
-## Cost
-
-~$2–4/mo at low volume (Connect DID + MMS + SES).
-
-## Verify 10DLC
-
-`bash scripts/verify-10dlc.sh` — confirm `+19452025796` is Active with MMS, campaign `CJDA4Y5`.
+> The person you called at 3 4 7, 7 9 8, 7 5 8 3 is not available. Please leave a message after the tone.

@@ -29,7 +29,7 @@
       "Type": "GetParticipantInput",
       "Parameters": {
         "Text": "The person you called at 3 4 7, 7 9 8, 7 5 8 3 is not available. Please leave a message after the tone.",
-        "InputTimeLimitSeconds": 60,
+        "InputTimeLimitSeconds": "{{MAX_VOICEMAIL_SECONDS}}",
         "StoreInput": "False"
       },
       "Transitions": {
