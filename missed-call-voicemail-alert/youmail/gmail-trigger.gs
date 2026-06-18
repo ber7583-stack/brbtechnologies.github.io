@@ -1,7 +1,6 @@
 /**
  * YouMail → AWS SMS/MMS alerts.
- * YouMail emails have a PLAY MESSAGE link (not an MP3 attachment).
- * Downloads MP3 from media.youmail.com using the link token — no PIN.
+ * Downloads MP3 from media.youmail.com — no PIN.
  */
 
 const WEBHOOK_URL = "https://7wo4ekjym9.execute-api.us-east-1.amazonaws.com/webhook";
@@ -29,7 +28,150 @@ function isYouMailEmail_(msg) {
 }
 
 function emailBlob_(msg) {
-  return ((msg.getBody() || "") + "\n" + (msg.getPlainBody() || "")).replace(/&amp;/g, "&");
+  var parts = [msg.getBody() || "", msg.getPlainBody() || ""];
+  try {
+    if (typeof Gmail !== "undefined" && Gmail.Users && Gmail.Users.Messages) {
+      var raw = Gmail.Users.Messages.get("me", msg.getId(), { format: "raw" });
+      if (raw && raw.raw) {
+        parts.push(
+          Utilities.newBlob(
+            Utilities.base64DecodeWebSafe(raw.raw)
+          ).getDataAsString()
+        );
+      }
+    }
+  } catch (e) {
+    Logger.log("Raw MIME not available (enable Gmail API service if needed): " + e);
+  }
+  return parts.join("\n").replace(/&amp;/g, "&");
+}
+
+function extractAllUrls_(blob) {
+  var urls = [];
+  var patterns = [
+    /href\s*=\s*["']([^"']+)["']/gi,
+    /data-saferedirecturl\s*=\s*["']([^"']+)["']/gi,
+    /https?:\/\/[^\s"'<>\)]+/gi,
+  ];
+  for (var p = 0; p < patterns.length; p++) {
+    var m;
+    while ((m = patterns[p].exec(blob)) !== null) {
+      urls.push((m[1] || m[0]).replace(/&amp;/g, "&"));
+    }
+  }
+  var seen = {};
+  return urls.filter(function (u) {
+    if (!u || seen[u]) return false;
+    seen[u] = true;
+    return true;
+  });
+}
+
+function decodeNestedUrl_(url) {
+  if (!url) return "";
+  var decoded = url;
+  for (var i = 0; i < 4; i++) {
+    try {
+      decoded = decodeURIComponent(decoded.replace(/\+/g, " "));
+    } catch (e) {}
+    var nested = decoded.match(/[?&](?:url|q|u|redirect)=([^&"'\s]+)/i);
+    if (nested) {
+      decoded = nested[1];
+      continue;
+    }
+    break;
+  }
+  return decoded;
+}
+
+function keyFromUrl_(url) {
+  if (!url) return null;
+  var decoded = decodeNestedUrl_(url);
+  var patterns = [
+    /\/messages\/view\/([A-Za-z0-9._-]{20,})/i,
+    /[?&]mk=([A-Za-z0-9._-]{20,})/i,
+    /"shareKey"\s*:\s*"([A-Za-z0-9._-]{20,})"/i,
+    /shareKey\\?"\s*:\s*\\?"([A-Za-z0-9._-]{20,})/i,
+  ];
+  for (var i = 0; i < patterns.length; i++) {
+    var m = (decoded + " " + url).match(patterns[i]);
+    if (m && m[1]) return m[1];
+  }
+  return null;
+}
+
+function keyFromHtml_(html) {
+  if (!html) return null;
+  return keyFromUrl_(html) || (html.match(/"shareKey"\s*:\s*"([A-Za-z0-9._-]{20,})"/) || [])[1] || null;
+}
+
+function followUrlForKey_(url, depth) {
+  depth = depth || 0;
+  if (!url || depth > 6) return null;
+
+  var direct = keyFromUrl_(url);
+  if (direct) return direct;
+
+  if (!/youmail|ymail/i.test(url)) return null;
+
+  try {
+    var resp = UrlFetchApp.fetch(url, {
+      muteHttpExceptions: true,
+      followRedirects: false,
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; YouMailAlert/1.0)" },
+    });
+    var code = resp.getResponseCode();
+    var headers = resp.getHeaders();
+    var loc = headers.Location || headers.location;
+
+    if (code >= 300 && code < 400 && loc) {
+      var fromLoc = keyFromUrl_(loc) || followUrlForKey_(loc, depth + 1);
+      if (fromLoc) return fromLoc;
+    }
+
+    if (code === 200) {
+      var html = resp.getContentText();
+      var fromHtml = keyFromHtml_(html);
+      if (fromHtml) return fromHtml;
+      var media = html.match(/https?:\/\/media\.youmail\.com[^"'\s<>]+/i);
+      if (media) {
+        var mk = keyFromUrl_(media[0]);
+        if (mk) return mk;
+      }
+    }
+  } catch (e) {
+    Logger.log("followUrl failed: " + e);
+  }
+  return null;
+}
+
+function extractMessageKeyFromEmail_(msg) {
+  var blob = emailBlob_(msg);
+
+  var direct = keyFromUrl_(blob);
+  if (direct) return direct;
+
+  var urls = extractAllUrls_(blob);
+  for (var i = 0; i < urls.length; i++) {
+    var k = keyFromUrl_(urls[i]);
+    if (k) return k;
+  }
+
+  for (var j = 0; j < urls.length; j++) {
+    if (/youmail|ymail|play-message/i.test(urls[j])) {
+      var k2 = followUrlForKey_(urls[j]);
+      if (k2) return k2;
+    }
+  }
+
+  for (var h = 0; h < urls.length; h++) {
+    if (/play|message|voicemail/i.test(urls[h])) {
+      var k3 = followUrlForKey_(urls[h]);
+      if (k3) return k3;
+    }
+  }
+
+  return null;
 }
 
 function detectAlertType_(subject, plain, msg) {
@@ -43,34 +185,6 @@ function detectAlertType_(subject, plain, msg) {
 function extractCaller_(subject, plain) {
   var m = (subject + " " + plain.substring(0, 800)).match(/\+?1?\s*\(?(\d{3})\)?[\s.-]?\d{3}[\s.-]?\d{4}/);
   return m ? m[0] : "Unknown";
-}
-
-function extractMessageKeyFromEmail_(msg) {
-  var blob = emailBlob_(msg);
-
-  var patterns = [
-    /\/messages\/view\/([A-Za-z0-9._-]+)/i,
-    /[?&]mk=([A-Za-z0-9._-]+)/i,
-    /shareKey\\?"\s*:\s*\\?"([A-Za-z0-9._-]+)/i,
-    /dashboard\.youmail\.com\/messages\/view\/([A-Za-z0-9._-]+)/i,
-  ];
-  for (var i = 0; i < patterns.length; i++) {
-    var m = blob.match(patterns[i]);
-    if (m && m[1] && m[1].length > 20) return m[1];
-  }
-
-  var decoded = blob.replace(/https?:\/\/www\.google\.com\/url\?q=([^&"'\s>]+)/gi, function (_, u) {
-    try {
-      return decodeURIComponent(u);
-    } catch (e) {
-      return u;
-    }
-  });
-  for (var j = 0; j < patterns.length; j++) {
-    var m2 = decoded.match(patterns[j]);
-    if (m2 && m2[1] && m2[1].length > 20) return m2[1];
-  }
-  return null;
 }
 
 function buildPlayUrl_(messageKey) {
@@ -88,17 +202,9 @@ function downloadMp3FromKey_(messageKey) {
     followRedirects: true,
     headers: { "User-Agent": "Mozilla/5.0 (compatible; YouMailAlert/1.0)" },
   });
-  var code = resp.getResponseCode();
-  if (code !== 200) {
-    Logger.log("MP3 download HTTP " + code + " for key " + messageKey.substring(0, 20) + "...");
-    return null;
-  }
+  if (resp.getResponseCode() !== 200) return null;
   var bytes = resp.getBlob().getBytes();
-  if (!bytes || bytes.length < 500) {
-    Logger.log("MP3 too small: " + (bytes ? bytes.length : 0));
-    return null;
-  }
-  return bytes;
+  return bytes && bytes.length >= 500 ? bytes : null;
 }
 
 function phoneDigits_(number) {
@@ -134,11 +240,7 @@ function sendAlert_(msg) {
       payload.audioBase64 = Utilities.base64Encode(bytes);
       payload.audioSource = "recording";
       Logger.log("Downloaded " + bytes.length + " byte MP3");
-    } else {
-      Logger.log("MP3 download failed — sending playUrl for AWS retry");
     }
-  } else if (alertType === "voicemail") {
-    Logger.log("WARNING: voicemail email but no message key found in email body");
   }
 
   postWebhook_(payload);
@@ -177,7 +279,7 @@ function resendLatestVoicemail() {
     var messages = threads[t].getMessages();
     for (var m = messages.length - 1; m >= 0; m--) {
       var subj = (messages[m].getSubject() || "").toLowerCase();
-      if (/vm from|voicemail/.test(subj) || extractMessageKeyFromEmail_(messages[m])) {
+      if (/vm from|voicemail/.test(subj)) {
         Logger.log("Resending: " + messages[m].getSubject());
         sendAlert_(messages[m]);
         return;
@@ -197,13 +299,23 @@ function diagnoseLatestEmail() {
     var messages = threads[t].getMessages();
     for (var m = messages.length - 1; m >= 0; m--) {
       var msg = messages[m];
-      var key = extractMessageKeyFromEmail_(msg);
+      var subj = msg.getSubject() || "";
+      if (!/vm from|voicemail/i.test(subj)) continue;
+
       Logger.log("---");
-      Logger.log("Subject: " + msg.getSubject());
-      Logger.log("Message key found: " + (key ? key.substring(0, 30) + "..." : "NO"));
+      Logger.log("Subject: " + subj);
+      var blob = emailBlob_(msg);
+      var urls = extractAllUrls_(blob);
+      Logger.log("URLs in email: " + urls.length);
+      for (var u = 0; u < Math.min(urls.length, 8); u++) {
+        Logger.log("  url[" + u + "]: " + urls[u].substring(0, 120));
+      }
+
+      var key = extractMessageKeyFromEmail_(msg);
+      Logger.log("Message key: " + (key ? key.substring(0, 30) + "..." : "NO"));
       if (key) {
         var bytes = downloadMp3FromKey_(key);
-        Logger.log("MP3 download: " + (bytes ? bytes.length + " bytes OK" : "FAILED"));
+        Logger.log("MP3: " + (bytes ? bytes.length + " bytes OK" : "FAILED"));
       }
     }
   }
