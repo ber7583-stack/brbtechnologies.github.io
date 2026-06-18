@@ -1,7 +1,9 @@
 /**
  * YouMail email → AWS SMS/MMS alerts.
- * Watches voicemail@youmail.com for missed calls and voicemails.
- * Sends play link to AWS; Lambda downloads audio via YouMail API.
+ *
+ * YouMail FREE plan: email has a PLAY LINK (not an MP3 attachment).
+ * This script reads voicemail@youmail.com, grabs that link, sends it to AWS.
+ * AWS downloads the audio and texts you with the recording attached.
  */
 
 const WEBHOOK_URL = "https://7wo4ekjym9.execute-api.us-east-1.amazonaws.com/webhook";
