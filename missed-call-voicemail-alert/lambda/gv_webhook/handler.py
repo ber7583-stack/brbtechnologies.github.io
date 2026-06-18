@@ -62,7 +62,11 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     if is_opted_out():
         return response(200, {"status": "skipped", "reason": "opted_out"})
 
-    alert_type = body.get("alertType", "voicemail")
+    alert_type = normalize_alert_type(
+        body.get("alertType", "missed_call"),
+        body.get("subject", ""),
+        body.get("snippet", ""),
+    )
     caller = format_phone(body.get("caller", "Unknown"))
     subject = body.get("subject", "")
     snippet = body.get("snippet", "")
@@ -218,6 +222,28 @@ def get_gv_session_json() -> str:
     except ClientError as exc:
         logger.warning("Could not load Google Voice session: %s", exc)
         return ""
+
+
+def normalize_alert_type(alert_type: str, subject: str, snippet: str) -> str:
+    text = f"{subject} {snippet}".lower()
+    subj = (subject or "").lower()
+    if "missed call" in subj or "missed call" in text:
+        return "missed_call"
+    if re.search(
+        r"no message left|no voicemail left|did not leave|didn't leave",
+        text,
+    ):
+        return "missed_call"
+    if re.search(
+        r"vm from|voicemail from|new voicemail|voice message|left you a message|play message",
+        text,
+    ):
+        return "voicemail"
+    if subj.startswith("voicemail"):
+        return "voicemail"
+    if alert_type in ("missed_call", "voicemail"):
+        return alert_type
+    return "missed_call"
 
 
 def format_alert_time(email_timestamp: datetime | None) -> str:

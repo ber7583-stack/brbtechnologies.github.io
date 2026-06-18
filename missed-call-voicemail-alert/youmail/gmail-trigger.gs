@@ -184,9 +184,17 @@ function extractMessageKeyFromEmail_(msg) {
 
 function detectAlertType_(subject, plain, msg) {
   var text = (subject + " " + plain).toLowerCase();
-  if (/vm from|voicemail|voice message|play message/.test(text)) return "voicemail";
-  if (/missed call/.test(text)) return "missed_call";
-  if (msg && extractMessageKeyFromEmail_(msg)) return "voicemail";
+  var subj = (subject || "").toLowerCase();
+
+  // Missed-call emails always say "Missed Call" in the subject; check before YouMail branding.
+  if (/missed call/.test(subj)) return "missed_call";
+  if (/no message left|no voicemail left|did not leave|didn't leave/.test(text)) return "missed_call";
+
+  if (/vm from|voicemail from|new voicemail|voice message|left you a message|play message/.test(text)) {
+    return "voicemail";
+  }
+  if (/^voicemail\b/.test(subj)) return "voicemail";
+
   return "missed_call";
 }
 
