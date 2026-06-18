@@ -10,6 +10,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
@@ -41,6 +42,7 @@ MMS_BUCKET = os.environ.get("MMS_BUCKET", "")
 MMS_MAX_AUDIO_BYTES = int(os.environ.get("MMS_MAX_AUDIO_BYTES", "614400"))
 GV_SESSION_SECRET_ARN = os.environ.get("GV_SESSION_SECRET_ARN", "")
 YOUMAIL_SESSION_SECRET_ARN = os.environ.get("YOUMAIL_SESSION_SECRET_ARN", "")
+RECIPIENT_TIMEZONE = os.environ.get("RECIPIENT_TIMEZONE", "America/New_York")
 
 _gv_session_cache: dict[str, Any] = {"value": "", "loaded_at": 0.0}
 _youmail_session_cache: dict[str, Any] = {"value": "", "loaded_at": 0.0}
@@ -81,7 +83,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     if audio_bytes and MMS_BUCKET:
         recording_url = store_audio_and_get_play_url(audio_bytes, audio_name, audio_type)
 
-    time_str = datetime.now(timezone.utc).astimezone().strftime("%b %d, %I:%M %p")
+    time_str = format_alert_time(email_timestamp)
     sms_body, email_subject, email_body, email_html = build_messages(
         alert_type,
         caller,
@@ -216,6 +218,17 @@ def get_gv_session_json() -> str:
     except ClientError as exc:
         logger.warning("Could not load Google Voice session: %s", exc)
         return ""
+
+
+def format_alert_time(email_timestamp: datetime | None) -> str:
+    tz = ZoneInfo(RECIPIENT_TIMEZONE)
+    if email_timestamp:
+        if email_timestamp.tzinfo is None:
+            email_timestamp = email_timestamp.replace(tzinfo=timezone.utc)
+        dt = email_timestamp.astimezone(tz)
+    else:
+        dt = datetime.now(timezone.utc).astimezone(tz)
+    return dt.strftime("%b %d, %I:%M %p %Z")
 
 
 def parse_timestamp(value: str | None) -> datetime | None:

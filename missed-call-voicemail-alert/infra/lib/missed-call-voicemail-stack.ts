@@ -78,6 +78,7 @@ export class MissedCallVoicemailStack extends cdk.Stack {
         MMS_MAX_AUDIO_BYTES: String(CONFIG.mmsMaxAudioBytes),
         GV_SESSION_SECRET_ARN: gvSessionSecret.secretArn,
         YOUMAIL_SESSION_SECRET_ARN: youmailSessionSecret.secretArn,
+        RECIPIENT_TIMEZONE: CONFIG.recipientTimezone || "America/New_York",
       },
     });
 

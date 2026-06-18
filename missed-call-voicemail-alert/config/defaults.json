@@ -8,6 +8,7 @@
   "campaignId": "CJDA4Y5",
   "awsRegion": "us-east-1",
   "mmsMaxAudioBytes": 614400,
+  "recipientTimezone": "America/New_York",
   "helpMessage": "Missed-call alerts: transactional voicemail notifications to your phone. Reply STOP to opt out. Msg&data rates may apply.",
   "stopMessage": "You are unsubscribed from missed-call alerts. Reply START to re-enable."
 }

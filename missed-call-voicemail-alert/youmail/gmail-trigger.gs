@@ -5,14 +5,22 @@
 
 const WEBHOOK_URL = "https://7wo4ekjym9.execute-api.us-east-1.amazonaws.com/webhook";
 const WEBHOOK_SECRET = "JDZwDjkR62dt1RyMG6VEMW2Sq2BfHt99";
+// Only alert on emails received in the last N minutes (avoids backlog texts).
+const MAX_ALERT_AGE_MINUTES = 45;
 
 function checkForYouMailEmails() {
   var query = "from:voicemail@youmail.com newer_than:2d";
   var threads = GmailApp.search(query, 0, 30);
+  var cutoff = Date.now() - MAX_ALERT_AGE_MINUTES * 60 * 1000;
   for (var t = 0; t < threads.length; t++) {
     var messages = threads[t].getMessages();
     for (var m = 0; m < messages.length; m++) {
       if (!isYouMailEmail_(messages[m]) || wasProcessed_(messages[m].getId())) continue;
+      if (messages[m].getDate().getTime() < cutoff) {
+        Logger.log("Skipping old email (no alert): " + messages[m].getSubject());
+        markProcessed_(messages[m].getId());
+        continue;
+      }
       sendAlert_(messages[m]);
       markProcessed_(messages[m].getId());
     }
@@ -271,6 +279,21 @@ function resetProcessed() {
   Object.keys(props.getProperties()).forEach(function (k) {
     if (k.indexOf("ym:") === 0) props.deleteProperty(k);
   });
+}
+
+/** Run once to silence backlog — marks all YouMail emails processed without texting. */
+function markAllOldAsDone() {
+  var threads = GmailApp.search("from:voicemail@youmail.com newer_than:14d", 0, 50);
+  var count = 0;
+  for (var t = 0; t < threads.length; t++) {
+    var messages = threads[t].getMessages();
+    for (var m = 0; m < messages.length; m++) {
+      if (!isYouMailEmail_(messages[m])) continue;
+      markProcessed_(messages[m].getId());
+      count++;
+    }
+  }
+  Logger.log("Marked " + count + " YouMail emails as done (no alerts sent).");
 }
 
 function resendLatestVoicemail() {
