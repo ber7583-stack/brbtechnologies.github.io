@@ -159,15 +159,11 @@ def resolve_audio(
         return None, "", "", ""
 
     use_youmail = email_source == "youmail" or "youmail.com" in (play_url or "")
-    if use_youmail:
-        session_json = get_youmail_session_json()
-        if session_json:
-            result = fetch_youmail_voicemail_audio(
-                session_json, caller, around=email_timestamp, play_url=play_url
-            )
-            if result:
-                audio_bytes, audio_name = result
-                return audio_bytes, audio_name, "audio/mpeg", "recording"
+    if use_youmail and play_url:
+        result = fetch_youmail_voicemail_audio("", caller, play_url=play_url)
+        if result:
+            audio_bytes, audio_name = result
+            return audio_bytes, audio_name, "audio/mpeg", "recording"
 
     session_json = get_gv_session_json()
     if session_json:
@@ -176,15 +172,11 @@ def resolve_audio(
             audio_bytes, audio_name = result
             return audio_bytes, audio_name, "audio/mpeg", "recording"
 
-    if not use_youmail:
-        session_json = get_youmail_session_json()
-        if session_json:
-            result = fetch_youmail_voicemail_audio(
-                session_json, caller, around=email_timestamp, play_url=play_url
-            )
-            if result:
-                audio_bytes, audio_name = result
-                return audio_bytes, audio_name, "audio/mpeg", "recording"
+    if not use_youmail and play_url and "youmail.com" in play_url:
+        result = fetch_youmail_voicemail_audio("", caller, play_url=play_url)
+        if result:
+            audio_bytes, audio_name = result
+            return audio_bytes, audio_name, "audio/mpeg", "recording"
 
     return None, "", "", ""
 

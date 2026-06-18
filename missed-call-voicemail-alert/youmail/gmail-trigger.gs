@@ -1,9 +1,7 @@
 /**
- * YouMail email → AWS SMS/MMS alerts.
- *
- * YouMail FREE plan: email has a PLAY LINK (not an MP3 attachment).
- * This script reads voicemail@youmail.com, grabs that link, sends it to AWS.
- * AWS downloads the audio and texts you with the recording attached.
+ * YouMail → AWS SMS/MMS alerts.
+ * YouMail emails have a PLAY MESSAGE link (not an MP3 attachment).
+ * This script downloads the MP3 from that link (no PIN) and sends it to AWS.
  */
 
 const WEBHOOK_URL = "https://7wo4ekjym9.execute-api.us-east-1.amazonaws.com/webhook";
@@ -27,21 +25,19 @@ function testCheckNow() {
 }
 
 function isYouMailEmail_(msg) {
-  var from = (msg.getFrom() || "").toLowerCase();
-  return from.indexOf("voicemail@youmail.com") >= 0;
+  return (msg.getFrom() || "").toLowerCase().indexOf("voicemail@youmail.com") >= 0;
 }
 
 function detectAlertType_(subject, plain, msg) {
   var text = (subject + " " + plain).toLowerCase();
   if (/vm from|voicemail|voice message|play message/.test(text)) return "voicemail";
   if (/missed call/.test(text)) return "missed_call";
-  if (msg && (extractPlayUrl_(msg) || extractAttachmentAudio_(msg))) return "voicemail";
+  if (msg && extractPlayUrl_(msg)) return "voicemail";
   return "missed_call";
 }
 
 function extractCaller_(subject, plain) {
-  var text = subject + " " + plain.substring(0, 800);
-  var m = text.match(/\+?1?\s*\(?(\d{3})\)?[\s.-]?(\d{3})[\s.-]?(\d{4})/);
+  var m = (subject + " " + plain.substring(0, 800)).match(/\+?1?\s*\(?(\d{3})\)?[\s.-]?\d{3}[\s.-]?\d{4}/);
   return m ? m[0] : "Unknown";
 }
 
@@ -51,38 +47,30 @@ function extractPlayUrl_(msg) {
   return m ? m[0] : null;
 }
 
-function extractDuration_(plain) {
-  var m = (plain || "").match(/,\s*(\d+)s\b/i);
-  return m ? parseInt(m[1], 10) : 0;
+function extractMessageKey_(playUrl) {
+  var m = (playUrl || "").match(/\/messages\/view\/([A-Za-z0-9._-]+)/);
+  return m ? m[1] : null;
 }
 
-function extractTranscript_(plain) {
-  if (!plain) return "";
-  return plain
-    .replace(/play\s*message/gi, "")
-    .replace(/https?:\/\/\S+/g, "")
-    .replace(/youmail/gi, "")
-    .replace(/called\s*\(\d{3}\)[\s\d-]+/gi, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function extractAttachmentAudio_(msg) {
-  var attachments = msg.getAttachments();
-  for (var i = 0; i < attachments.length; i++) {
-    var name = attachments[i].getName() || "";
-    var type = attachments[i].getContentType() || "";
-    if (/\.(mp3|wav|m4a)$/i.test(name) || type.indexOf("audio") >= 0) {
-      var bytes = attachments[i].getBytes();
-      if (bytes && bytes.length >= 500) {
-        return {
-          fileName: name || "voicemail.mp3",
-          dataBase64: Utilities.base64Encode(bytes),
-        };
-      }
-    }
+function downloadYouMailAudio_(playUrl) {
+  var mk = extractMessageKey_(playUrl);
+  if (!mk) return null;
+  var url =
+    "https://media.youmail.com/mcs/voicemail/sh/message.do?dataonly=true&mk=" +
+    encodeURIComponent(mk) +
+    "&sh=1&type=2&att=true";
+  var resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true });
+  if (resp.getResponseCode() !== 200) {
+    Logger.log("YouMail download failed: HTTP " + resp.getResponseCode());
+    return null;
   }
-  return null;
+  var bytes = resp.getBlob().getBytes();
+  if (!bytes || bytes.length < 500) return null;
+  return bytes;
+}
+
+function phoneDigits_(number) {
+  return (number || "").replace(/\D/g, "").replace(/^1/, "");
 }
 
 function sendAlert_(msg) {
@@ -90,12 +78,7 @@ function sendAlert_(msg) {
   var plain = msg.getPlainBody() || "";
   var caller = extractCaller_(subject, plain);
   var alertType = detectAlertType_(subject, plain, msg);
-  if (alertType === "missed_call" && extractPlayUrl_(msg)) {
-    alertType = "voicemail";
-  }
-  if (alertType === "voicemail" && extractDuration_(plain) > 0) {
-    alertType = "voicemail";
-  }
+  var playUrl = extractPlayUrl_(msg);
 
   var payload = {
     alertType: alertType,
@@ -105,22 +88,18 @@ function sendAlert_(msg) {
     emailTimestamp: msg.getDate().toISOString(),
     emailSource: "youmail",
   };
-
-  var playUrl = extractPlayUrl_(msg);
   if (playUrl) payload.playUrl = playUrl;
 
-  if (alertType === "voicemail") {
-    var transcript = extractTranscript_(plain);
-    if (transcript) payload.transcript = transcript;
-    var audio = extractAttachmentAudio_(msg);
-    if (audio) {
-      payload.audioFileName = audio.fileName;
+  if (alertType === "voicemail" && playUrl) {
+    var bytes = downloadYouMailAudio_(playUrl);
+    if (bytes) {
+      payload.audioFileName = "voicemail-" + (phoneDigits_(caller) || "unknown") + ".mp3";
       payload.audioContentType = "audio/mpeg";
-      payload.audioBase64 = audio.dataBase64;
+      payload.audioBase64 = Utilities.base64Encode(bytes);
       payload.audioSource = "recording";
-      Logger.log("Using MP3 from email attachment (" + Math.round(audio.dataBase64.length * 0.75) + " bytes)");
-    } else if (playUrl) {
-      Logger.log("Sending play link for Lambda to fetch audio: " + playUrl.substring(0, 60) + "...");
+      Logger.log("Downloaded " + bytes.length + " byte MP3 from YouMail play link");
+    } else {
+      Logger.log("Could not download MP3 — AWS will try from play link");
     }
   }
 
@@ -136,9 +115,7 @@ function postWebhook_(payload) {
     muteHttpExceptions: true,
   });
   Logger.log(res.getResponseCode() + " " + res.getContentText());
-  if (res.getResponseCode() !== 200) {
-    throw new Error("Alert failed: " + res.getContentText());
-  }
+  if (res.getResponseCode() !== 200) throw new Error("Alert failed: " + res.getContentText());
 }
 
 function wasProcessed_(messageId) {
@@ -151,20 +128,24 @@ function markProcessed_(messageId) {
 
 function resetProcessed() {
   var props = PropertiesService.getScriptProperties();
-  var all = props.getProperties();
-  Object.keys(all).forEach(function (k) {
+  Object.keys(props.getProperties()).forEach(function (k) {
     if (k.indexOf("ym:") === 0) props.deleteProperty(k);
   });
 }
 
 function resendLatestVoicemail() {
-  var query = "from:voicemail@youmail.com subject:(VM OR Voicemail) newer_than:7d";
-  var threads = GmailApp.search(query, 0, 1);
+  var threads = GmailApp.search("from:voicemail@youmail.com subject:(VM OR Voicemail) newer_than:7d", 0, 1);
   if (!threads.length) {
     Logger.log("No YouMail voicemail emails found");
     return;
   }
   var messages = threads[0].getMessages();
-  var msg = messages[messages.length - 1];
-  sendAlert_(msg);
+  sendAlert_(messages[messages.length - 1]);
+}
+
+function testDownloadFromLink() {
+  var url =
+    "https://dashboard.youmail.com/messages/view/e1AArAHuHuO5PfLiMwT0YvzIOp2IereNlsldT9o4u6AitHnSooKKHopzpDw76uV_?ap=y";
+  var bytes = downloadYouMailAudio_(url);
+  Logger.log(bytes ? "SUCCESS: " + bytes.length + " bytes" : "FAILED");
 }
