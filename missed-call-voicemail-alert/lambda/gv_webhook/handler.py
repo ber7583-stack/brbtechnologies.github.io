@@ -73,6 +73,21 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     recording_url = ""
     if audio_bytes and MMS_BUCKET:
         recording_url = store_audio_and_get_play_url(audio_bytes, audio_name, audio_type)
+    if alert_type == "voicemail" and not audio_bytes:
+        logger.warning(
+            "voicemail alert without audio caller=%s hasBase64=%s",
+            caller,
+            bool(body.get("audioBase64")),
+        )
+        return response(
+            422,
+            {
+                "error": "audio_required",
+                "caller": caller,
+                "message": "Voicemail alerts must include original recording audio",
+            },
+        )
+
     time_str = datetime.now(timezone.utc).astimezone().strftime("%b %d, %I:%M %p")
     sms_body, email_subject, email_body, email_html = build_messages(
         alert_type,
@@ -369,10 +384,7 @@ def build_messages(
     transcript_block = transcript.strip() or snippet.strip()
 
     if has_audio and audio_source == "recording":
-        sms_body = (
-            f"Voicemail from {caller} at {time_str}. "
-            f"Tap Play in your email ({RECIPIENT_EMAIL})."
-        )
+        sms_body = f"Voicemail from {caller} at {time_str}. MP3 attached to your email."
         email_body = (
             f"Voicemail alert\n\nCaller: {caller}\nTime: {time_str}\n\n"
             f"Play the original recording:\n{listen_url}\n\n"

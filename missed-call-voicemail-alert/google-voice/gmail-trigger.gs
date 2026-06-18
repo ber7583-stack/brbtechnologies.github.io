@@ -18,8 +18,10 @@ function checkForVoicemailEmails() {
     var messages = threads[t].getMessages();
     for (var m = 0; m < messages.length; m++) {
       if (!isGoogleVoiceEmail_(messages[m]) || wasProcessed_(messages[m].getId())) continue;
-      sendAlert_(messages[m]);
-      markProcessed_(messages[m].getId());
+      if (sendAlert_(messages[m])) {
+        markProcessed_(messages[m].getId());
+        clearRetry_(messages[m].getId());
+      }
     }
   }
 }
@@ -47,13 +49,94 @@ function testDownloadAudio() {
   Logger.log("Could not download. Re-export cookies from voice.google.com and update GV_COOKIES.");
 }
 
+function sendLatestVoicemailNow() {
+  var messages = listVoicemailMessages_();
+  if (!messages.length) {
+    Logger.log("No voicemails in Google Voice");
+    return;
+  }
+  var msg = messages[0];
+  var caller = msg._contact_phone || "Unknown";
+  var payload = {
+    alertType: "voicemail",
+    caller: caller,
+    subject: "Voicemail from " + caller,
+    snippet: msg.messageText || "",
+    emailTimestamp: new Date(parseInt(msg.startTime, 10)).toISOString(),
+  };
+  var bytes = downloadRecording_(msg.recordingUrl);
+  if (bytes) {
+    payload.audioFileName = "voicemail-" + phoneDigits_(caller) + ".mp3";
+    payload.audioContentType = "audio/mpeg";
+    payload.audioBase64 = Utilities.base64Encode(bytes);
+    payload.audioSource = "recording";
+    Logger.log("Attached " + bytes.length + " byte recording");
+  } else {
+    Logger.log("FAILED to download recording");
+    return;
+  }
+  postWebhook_(payload);
+}
+
+function resendForCaller(phone) {
+  var target = phoneDigits_(phone);
+  if (!target) {
+    Logger.log("Pass phone digits, e.g. resendForCaller('3475760964')");
+    return;
+  }
+  var messages = listVoicemailMessages_();
+  var match = null;
+  for (var i = 0; i < messages.length; i++) {
+    if (phoneDigits_(messages[i]._contact_phone) === target) {
+      match = messages[i];
+      break;
+    }
+  }
+  if (!match) {
+    Logger.log("No voicemail found for " + target);
+    return;
+  }
+  var caller = match._contact_phone || phone;
+  var payload = {
+    alertType: "voicemail",
+    caller: caller,
+    subject: "Voicemail from " + caller,
+    snippet: match.messageText || "",
+    emailTimestamp: new Date(parseInt(match.startTime, 10)).toISOString(),
+  };
+  var bytes = downloadRecording_(match.recordingUrl);
+  if (!bytes) {
+    Logger.log("Download failed for " + caller);
+    return;
+  }
+  payload.audioFileName = "voicemail-" + target + ".mp3";
+  payload.audioContentType = "audio/mpeg";
+  payload.audioBase64 = Utilities.base64Encode(bytes);
+  payload.audioSource = "recording";
+  Logger.log("Sending " + bytes.length + " bytes for " + caller);
+  postWebhook_(payload);
+}
+
 function isGoogleVoiceEmail_(msg) {
   var text = ((msg.getFrom() || "") + " " + (msg.getSubject() || "") + " " + msg.getPlainBody().substring(0, 500)).toLowerCase();
   if (!/voice\.google|txt\.voice\.google/.test(text)) return false;
-  return /missed call|voicemail|voice message|new text message from/.test(text);
+  return /missed call|voicemail|voice message|new text message from|play message|transcript/.test(text);
 }
 
-function detectAlertType_(subject, snippet) {
+function hasVoicemailSignals_(msg) {
+  var subject = msg.getSubject() || "";
+  var plain = msg.getPlainBody() || "";
+  var html = msg.getBody() || "";
+  var text = (subject + " " + plain).toLowerCase();
+  if (/voicemail|voice message|play message|left you a message|new message from/.test(text)) return true;
+  if (/transcript/i.test(plain) && plain.length > 80) return true;
+  if (/voice\/fm\/|voice\.google\.com\/.*voicemail/i.test(html)) return true;
+  if (extractVoicemailPlayUrl_(msg)) return true;
+  return false;
+}
+
+function detectAlertType_(subject, snippet, msg) {
+  if (msg && hasVoicemailSignals_(msg)) return "voicemail";
   var text = (subject + " " + snippet).toLowerCase();
   if (/voicemail|voice message/.test(text)) return "voicemail";
   if (/missed call/.test(text)) return "missed_call";
@@ -66,6 +149,7 @@ function extractVoicemailPlayUrl_(msg) {
     /https?:\/\/www\.google\.com\/voice\/fm\/[A-Za-z0-9._-]+/i,
     /https?:\/\/voice\.google\.com\/u\/\d+\/voicemail\/[A-Za-z0-9._-]+/i,
     /https?:\/\/voice\.google\.com\/voicemail\/[A-Za-z0-9._-]+/i,
+    /https?:\/\/[^"'\s>]+\.googleusercontent\.com\/[^"'\s>]+\.mp3[^"'\s>]*/i,
   ];
   for (var i = 0; i < patterns.length; i++) {
     var m = blob.match(patterns[i]);
@@ -161,7 +245,7 @@ function gvPost_(endpoint, body) {
 }
 
 function listVoicemailMessages_() {
-  var data = gvPost_("api2thread/list", [4, 20, 15, null, null, [null, 1, 1, 1]]);
+  var data = gvPost_("api2thread/list", [4, 50, 15, null, null, [null, 1, 1, 1]]);
   if (!data) return [];
   var out = [];
   (data.thread || []).forEach(function (thread) {
@@ -197,7 +281,7 @@ function findVoicemail_(caller, emailDate) {
     }
     if (aroundMs && startMs) {
       var delta = Math.abs(startMs - aroundMs);
-      if (delta > 1800000) return;
+      if (delta > 3600000) return;
       if (delta < bestDelta) {
         best = msg;
         bestDelta = delta;
@@ -209,41 +293,13 @@ function findVoicemail_(caller, emailDate) {
   return best || latestFromCaller;
 }
 
-function sendLatestVoicemailNow() {
-  var messages = listVoicemailMessages_();
-  if (!messages.length) {
-    Logger.log("No voicemails in Google Voice");
-    return;
-  }
-  var msg = messages[0];
-  var caller = msg._contact_phone || "Unknown";
-  var payload = {
-    alertType: "voicemail",
-    caller: caller,
-    subject: "Voicemail from " + caller,
-    snippet: msg.messageText || "",
-    emailTimestamp: new Date(parseInt(msg.startTime, 10)).toISOString(),
-  };
-  var bytes = downloadRecording_(msg.recordingUrl);
-  if (bytes) {
-    payload.audioFileName = "voicemail-" + phoneDigits_(caller) + ".mp3";
-    payload.audioContentType = "audio/mpeg";
-    payload.audioBase64 = Utilities.base64Encode(bytes);
-    payload.audioSource = "recording";
-    Logger.log("Attached " + bytes.length + " byte recording");
-  }
-  var res = UrlFetchApp.fetch(WEBHOOK_URL, {
-    method: "post",
-    contentType: "application/json",
-    headers: { "X-Webhook-Secret": WEBHOOK_SECRET },
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true,
-  });
-  Logger.log(res.getResponseCode() + " " + res.getContentText());
-}
-
 function downloadRecording_(url) {
+  if (!url) return null;
   var cookies = getCookieList_();
+  if (!cookies.length) {
+    Logger.log("GV_COOKIES is empty - paste cookies from Cookie-Editor");
+    return null;
+  }
   var headerSets = [
     gvDownloadHeaders_(cookies),
     { Cookie: cookieHeader_(cookies), Referer: GV_ORIGIN },
@@ -263,8 +319,20 @@ function downloadRecording_(url) {
   return null;
 }
 
-function tryDownloadOriginalAudio_(caller, emailDate) {
+function tryDownloadOriginalAudio_(caller, emailDate, playUrl) {
   try {
+    if (playUrl) {
+      var direct = downloadRecording_(playUrl);
+      if (direct) {
+        Logger.log("Downloaded " + direct.length + " bytes from email play link");
+        return {
+          fileName: "voicemail-" + (phoneDigits_(caller) || "unknown") + ".mp3",
+          dataBase64: Utilities.base64Encode(direct),
+        };
+      }
+      Logger.log("Email play link failed, trying GV API");
+    }
+
     var messages = listVoicemailMessages_();
     if (!messages.length) {
       Logger.log("No voicemails in Google Voice inbox");
@@ -273,13 +341,7 @@ function tryDownloadOriginalAudio_(caller, emailDate) {
     var match = findVoicemail_(caller, emailDate);
     if (!match) {
       match = messages[0];
-      Logger.log(
-        "Using latest GV voicemail from " +
-          match._contact_phone +
-          " (caller match failed for " +
-          caller +
-          ")"
-      );
+      Logger.log("Using latest GV voicemail from " + match._contact_phone + " (no match for " + caller + ")");
     }
     var bytes = downloadRecording_(match.recordingUrl);
     if (!bytes) {
@@ -287,6 +349,7 @@ function tryDownloadOriginalAudio_(caller, emailDate) {
       return null;
     }
     var who = phoneDigits_(match._contact_phone) || phoneDigits_(caller) || "unknown";
+    Logger.log("Downloaded " + bytes.length + " bytes from GV API for " + who);
     return {
       fileName: "voicemail-" + who + ".mp3",
       dataBase64: Utilities.base64Encode(bytes),
@@ -297,13 +360,25 @@ function tryDownloadOriginalAudio_(caller, emailDate) {
   }
 }
 
+function tryDownloadOriginalAudioWithRetries_(caller, emailDate, playUrl, attempts) {
+  attempts = attempts || 5;
+  for (var i = 0; i < attempts; i++) {
+    if (i > 0) Utilities.sleep(4000);
+    var audio = tryDownloadOriginalAudio_(caller, emailDate, playUrl);
+    if (audio) return audio;
+    Logger.log("Audio attempt " + (i + 1) + "/" + attempts + " failed");
+  }
+  return null;
+}
+
 function sendAlert_(msg) {
+  var messageId = msg.getId();
   var subject = msg.getSubject() || "";
   var plain = msg.getPlainBody() || "";
   var snippet = plain.substring(0, 1500);
   var callerMatch = (subject + " " + snippet).match(/\+?1?\s*\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/);
   var caller = callerMatch ? callerMatch[0] : "Unknown";
-  var alertType = detectAlertType_(subject, snippet);
+  var alertType = detectAlertType_(subject, snippet, msg);
   var payload = {
     alertType: alertType,
     caller: caller,
@@ -311,32 +386,31 @@ function sendAlert_(msg) {
     snippet: snippet,
     emailTimestamp: msg.getDate().toISOString(),
   };
+
   if (alertType === "voicemail") {
     var playUrl = extractVoicemailPlayUrl_(msg);
     if (playUrl) payload.playUrl = playUrl;
     var transcript = extractTranscript_(plain);
     if (transcript) payload.transcript = transcript;
-    try {
-      var audio = tryDownloadOriginalAudio_(caller, msg.getDate());
-      if (audio) {
-        payload.audioFileName = audio.fileName;
-        payload.audioContentType = "audio/mpeg";
-        payload.audioBase64 = audio.dataBase64;
-        payload.audioSource = "recording";
-        Logger.log(
-          "Attached recording for " +
-            caller +
-            " (" +
-            Math.round(audio.dataBase64.length * 0.75) +
-            " bytes)"
-        );
-      } else {
-        Logger.log("No audio for caller " + caller + " — check GV_COOKIES or run testDownloadAudio");
-      }
-    } catch (e) {
-      Logger.log("Audio download error (sending text alert anyway): " + e);
+
+    var audio = tryDownloadOriginalAudioWithRetries_(caller, msg.getDate(), playUrl, 5);
+    if (!audio) {
+      var retries = incrementRetry_(messageId);
+      Logger.log("Voicemail from " + caller + ": no audio yet (try " + retries + ") - will retry next minute");
+      return false;
     }
+    payload.audioFileName = audio.fileName;
+    payload.audioContentType = "audio/mpeg";
+    payload.audioBase64 = audio.dataBase64;
+    payload.audioSource = "recording";
+    Logger.log("Attached " + Math.round(audio.dataBase64.length * 0.75) + " byte recording for " + caller);
   }
+
+  postWebhook_(payload);
+  return true;
+}
+
+function postWebhook_(payload) {
   var res = UrlFetchApp.fetch(WEBHOOK_URL, {
     method: "post",
     contentType: "application/json",
@@ -356,10 +430,24 @@ function markProcessed_(messageId) {
   PropertiesService.getScriptProperties().setProperty("processed:" + messageId, "1");
 }
 
+function getRetryCount_(messageId) {
+  return parseInt(PropertiesService.getScriptProperties().getProperty("retry:" + messageId) || "0", 10);
+}
+
+function incrementRetry_(messageId) {
+  var n = getRetryCount_(messageId) + 1;
+  PropertiesService.getScriptProperties().setProperty("retry:" + messageId, String(n));
+  return n;
+}
+
+function clearRetry_(messageId) {
+  PropertiesService.getScriptProperties().deleteProperty("retry:" + messageId);
+}
+
 function resetProcessed() {
   var props = PropertiesService.getScriptProperties();
   var all = props.getProperties();
   Object.keys(all).forEach(function (k) {
-    if (k.indexOf("processed:") === 0) props.deleteProperty(k);
+    if (k.indexOf("processed:") === 0 || k.indexOf("retry:") === 0) props.deleteProperty(k);
   });
 }
