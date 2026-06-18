@@ -186,7 +186,8 @@ function detectAlertType_(subject, plain, msg) {
   var text = (subject + " " + plain).toLowerCase();
   var subj = (subject || "").toLowerCase();
 
-  // Missed-call emails always say "Missed Call" in the subject; check before YouMail branding.
+  // YouMail subject says "Missed Call from …" — check that before body URLs
+  // like media.youmail.com/.../voicemail/... which appear on every email.
   if (/missed call/.test(subj)) return "missed_call";
   if (/no message left|no voicemail left|did not leave|didn't leave/.test(text)) return "missed_call";
 
