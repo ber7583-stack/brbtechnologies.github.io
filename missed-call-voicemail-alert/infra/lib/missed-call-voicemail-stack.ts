@@ -52,6 +52,13 @@ export class MissedCallVoicemailStack extends cdk.Stack {
       ),
     });
 
+    const youmailSessionSecret = new secretsmanager.Secret(this, "YoumailSessionSecret", {
+      description: "YouMail phone + PIN for voicemail API download",
+      secretStringValue: cdk.SecretValue.unsafePlainText(
+        JSON.stringify({ phone: CONFIG.recipientPhone, pin: "" })
+      ),
+    });
+
     const gvWebhookFn = new lambda.Function(this, "GvWebhook", {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "handler.handler",
@@ -70,10 +77,12 @@ export class MissedCallVoicemailStack extends cdk.Stack {
         MMS_BUCKET: mmsBucket.bucketName,
         MMS_MAX_AUDIO_BYTES: String(CONFIG.mmsMaxAudioBytes),
         GV_SESSION_SECRET_ARN: gvSessionSecret.secretArn,
+        YOUMAIL_SESSION_SECRET_ARN: youmailSessionSecret.secretArn,
       },
     });
 
     gvSessionSecret.grantRead(gvWebhookFn);
+    youmailSessionSecret.grantRead(gvWebhookFn);
 
     optOutTable.grantReadData(gvWebhookFn);
     mmsBucket.grantReadWrite(gvWebhookFn);
@@ -163,12 +172,12 @@ export class MissedCallVoicemailStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, "WebhookUrl", {
       value: `${httpApi.apiEndpoint}/webhook`,
-      description: "Paste into google-voice/gmail-trigger.gs",
+      description: "Paste into youmail/gmail-trigger.gs",
     });
 
     new cdk.CfnOutput(this, "WebhookSecret", {
       value: webhookSecret.secretValue.unsafeUnwrap(),
-      description: "Paste into google-voice/gmail-trigger.gs",
+      description: "Paste into youmail/gmail-trigger.gs",
     });
 
     new cdk.CfnOutput(this, "InboundSmsTopicArn", {

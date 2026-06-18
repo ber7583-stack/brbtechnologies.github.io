@@ -1,4 +1,4 @@
-"""Webhook from Gmail (Google Voice emails) → SMS/MMS + email with audio attachment."""
+"""Webhook from Gmail (YouMail / Google Voice emails) → SMS/MMS + email."""
 
 from __future__ import annotations
 
@@ -19,7 +19,8 @@ from typing import Any
 import boto3
 from botocore.exceptions import ClientError
 
-from gv_client import fetch_voicemail_audio
+from gv_client import fetch_voicemail_audio as fetch_gv_voicemail_audio
+from youmail_client import fetch_voicemail_audio as fetch_youmail_voicemail_audio
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -39,8 +40,10 @@ OPT_OUT_TABLE = os.environ.get("OPT_OUT_TABLE", "")
 MMS_BUCKET = os.environ.get("MMS_BUCKET", "")
 MMS_MAX_AUDIO_BYTES = int(os.environ.get("MMS_MAX_AUDIO_BYTES", "614400"))
 GV_SESSION_SECRET_ARN = os.environ.get("GV_SESSION_SECRET_ARN", "")
+YOUMAIL_SESSION_SECRET_ARN = os.environ.get("YOUMAIL_SESSION_SECRET_ARN", "")
 
-_session_cache: dict[str, Any] = {"value": "", "loaded_at": 0.0}
+_gv_session_cache: dict[str, Any] = {"value": "", "loaded_at": 0.0}
+_youmail_session_cache: dict[str, Any] = {"value": "", "loaded_at": 0.0}
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -62,31 +65,18 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     subject = body.get("subject", "")
     snippet = body.get("snippet", "")
     play_url = body.get("playUrl", "")
+    email_source = body.get("emailSource", "")
     transcript = body.get("transcript", "") or body.get("snippet", "")
     if caller == "Unknown":
         caller = extract_caller(subject, snippet)
 
     email_timestamp = parse_timestamp(body.get("emailTimestamp"))
     audio_bytes, audio_name, audio_type, audio_source = resolve_audio(
-        body, alert_type, caller, email_timestamp
+        body, alert_type, caller, email_timestamp, play_url, email_source
     )
     recording_url = ""
     if audio_bytes and MMS_BUCKET:
         recording_url = store_audio_and_get_play_url(audio_bytes, audio_name, audio_type)
-    if alert_type == "voicemail" and not audio_bytes:
-        logger.warning(
-            "voicemail alert without audio caller=%s hasBase64=%s",
-            caller,
-            bool(body.get("audioBase64")),
-        )
-        return response(
-            422,
-            {
-                "error": "audio_required",
-                "caller": caller,
-                "message": "Voicemail alerts must include original recording audio",
-            },
-        )
 
     time_str = datetime.now(timezone.utc).astimezone().strftime("%b %d, %I:%M %p")
     sms_body, email_subject, email_body, email_html = build_messages(
@@ -110,6 +100,9 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         logger.error("Phone alert failed (email will still send): %s", exc)
         phone_delivery = f"failed:{exc}"
 
+    if alert_type == "voicemail" and not audio_bytes:
+        logger.warning("voicemail sent without audio caller=%s playUrl=%s", caller, bool(play_url))
+
     try:
         email_id = send_email(
             email_subject, email_body, email_html, audio_bytes, audio_name, audio_type, caller
@@ -126,12 +119,13 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
 
     logger.info(
-        "alert caller=%s hasAudio=%s audioBytes=%d phone=%s hasPlayUrl=%s",
+        "alert caller=%s type=%s hasAudio=%s audioBytes=%d phone=%s source=%s",
         caller,
+        alert_type,
         bool(audio_bytes),
         len(audio_bytes) if audio_bytes else 0,
         phone_delivery,
-        bool(recording_url),
+        email_source or "unknown",
     )
 
     return response(
@@ -154,6 +148,8 @@ def resolve_audio(
     alert_type: str,
     caller: str,
     email_timestamp: datetime | None,
+    play_url: str,
+    email_source: str,
 ) -> tuple[bytes | None, str, str, str]:
     audio_bytes, audio_name, audio_type = decode_audio(body)
     if audio_bytes and len(audio_bytes) >= 500:
@@ -162,27 +158,65 @@ def resolve_audio(
     if alert_type != "voicemail":
         return None, "", "", ""
 
+    use_youmail = email_source == "youmail" or "youmail.com" in (play_url or "")
+    if use_youmail:
+        session_json = get_youmail_session_json()
+        if session_json:
+            result = fetch_youmail_voicemail_audio(
+                session_json, caller, around=email_timestamp, play_url=play_url
+            )
+            if result:
+                audio_bytes, audio_name = result
+                return audio_bytes, audio_name, "audio/mpeg", "recording"
+
     session_json = get_gv_session_json()
     if session_json:
-        result = fetch_voicemail_audio(session_json, caller, around=email_timestamp)
+        result = fetch_gv_voicemail_audio(session_json, caller, around=email_timestamp)
         if result:
             audio_bytes, audio_name = result
             return audio_bytes, audio_name, "audio/mpeg", "recording"
 
+    if not use_youmail:
+        session_json = get_youmail_session_json()
+        if session_json:
+            result = fetch_youmail_voicemail_audio(
+                session_json, caller, around=email_timestamp, play_url=play_url
+            )
+            if result:
+                audio_bytes, audio_name = result
+                return audio_bytes, audio_name, "audio/mpeg", "recording"
+
     return None, "", "", ""
+
+
+def get_youmail_session_json() -> str:
+    if not YOUMAIL_SESSION_SECRET_ARN:
+        return ""
+    now = time.time()
+    if _youmail_session_cache["value"] and now - _youmail_session_cache["loaded_at"] < 300:
+        return _youmail_session_cache["value"]
+    try:
+        resp = secrets.get_secret_value(SecretId=YOUMAIL_SESSION_SECRET_ARN)
+        value = resp.get("SecretString") or ""
+        _youmail_session_cache["value"] = value
+        _youmail_session_cache["loaded_at"] = now
+        return value
+    except ClientError as exc:
+        logger.warning("Could not load YouMail credentials: %s", exc)
+        return ""
 
 
 def get_gv_session_json() -> str:
     if not GV_SESSION_SECRET_ARN:
         return ""
     now = time.time()
-    if _session_cache["value"] and now - _session_cache["loaded_at"] < 300:
-        return _session_cache["value"]
+    if _gv_session_cache["value"] and now - _gv_session_cache["loaded_at"] < 300:
+        return _gv_session_cache["value"]
     try:
         resp = secrets.get_secret_value(SecretId=GV_SESSION_SECRET_ARN)
         value = resp.get("SecretString") or ""
-        _session_cache["value"] = value
-        _session_cache["loaded_at"] = now
+        _gv_session_cache["value"] = value
+        _gv_session_cache["loaded_at"] = now
         return value
     except ClientError as exc:
         logger.warning("Could not load Google Voice session: %s", exc)
@@ -377,14 +411,18 @@ def build_messages(
         else ""
     )
     gv_link = (
-        f'<p><a href="{play_url}">Also open in Google Voice</a></p>'
-        if play_url and play_url != listen_url
-        else ""
+        f'<p><a href="{play_url}">Open in YouMail</a></p>'
+        if play_url and play_url != listen_url and "youmail.com" in play_url
+        else (
+            f'<p><a href="{play_url}">Also open in Google Voice</a></p>'
+            if play_url and play_url != listen_url
+            else ""
+        )
     )
     transcript_block = transcript.strip() or snippet.strip()
 
     if has_audio and audio_source == "recording":
-        sms_body = f"Voicemail from {caller} at {time_str}. MP3 attached to your email."
+        sms_body = f"Voicemail from {caller} at {time_str}. Recording attached."
         email_body = (
             f"Voicemail alert\n\nCaller: {caller}\nTime: {time_str}\n\n"
             f"Play the original recording:\n{listen_url}\n\n"
@@ -397,10 +435,9 @@ def build_messages(
             f"{gv_link}"
         )
     else:
-        sms_body = f"Voicemail from {caller} at {time_str}. Play link in your email."
+        sms_body = f"Voicemail from {caller} at {time_str}. Listen: check your email."
         email_body = (
             f"Voicemail alert\n\nCaller: {caller}\nTime: {time_str}\n"
-            f"Could not attach the original recording automatically.\n"
         )
         if listen_url:
             email_body += f"\nPlay voicemail: {listen_url}\n"
@@ -408,9 +445,8 @@ def build_messages(
             email_body += f"\nTranscript:\n{transcript_block}\n"
         transcript_html = f"<pre>{transcript_block}</pre>" if transcript_block else ""
         email_html = (
-            f"<p><b>Voicemail from {caller}</b><br>Time: {time_str}<br>"
-            f"Original recording not attached — use the play link below.</p>"
-            f"{listen_link}{gv_link}{transcript_html}"
+            f"<p><b>Voicemail from {caller}</b><br>Time: {time_str}</p>"
+            f"{listen_link}{transcript_html}"
         )
 
     return sms_body, email_subject, email_body, email_html
