@@ -65,6 +65,9 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     subject = body.get("subject", "")
     snippet = body.get("snippet", "")
     play_url = body.get("playUrl", "")
+    message_key = body.get("youmailMessageKey", "")
+    if not play_url and message_key:
+        play_url = f"https://dashboard.youmail.com/messages/view/{message_key}?ap=y"
     email_source = body.get("emailSource", "")
     transcript = body.get("transcript", "") or body.get("snippet", "")
     if caller == "Unknown":
