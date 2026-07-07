@@ -43,6 +43,7 @@ MMS_MAX_AUDIO_BYTES = int(os.environ.get("MMS_MAX_AUDIO_BYTES", "614400"))
 GV_SESSION_SECRET_ARN = os.environ.get("GV_SESSION_SECRET_ARN", "")
 YOUMAIL_SESSION_SECRET_ARN = os.environ.get("YOUMAIL_SESSION_SECRET_ARN", "")
 RECIPIENT_TIMEZONE = os.environ.get("RECIPIENT_TIMEZONE", "America/New_York")
+SEND_ALERT_EMAIL = os.environ.get("SEND_ALERT_EMAIL", "false").lower() in ("1", "true", "yes")
 
 _gv_session_cache: dict[str, Any] = {"value": "", "loaded_at": 0.0}
 _youmail_session_cache: dict[str, Any] = {"value": "", "loaded_at": 0.0}
@@ -112,20 +113,24 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     if alert_type == "voicemail" and not audio_bytes:
         logger.warning("voicemail sent without audio caller=%s playUrl=%s", caller, bool(play_url))
 
-    try:
-        email_id = send_email(
-            email_subject, email_body, email_html, audio_bytes, audio_name, audio_type, caller
-        )
-    except Exception as exc:
-        logger.error("Email send failed: %s", exc)
-        return response(
-            502,
-            {
-                "error": "email_failed",
-                "detail": str(exc),
-                "phoneDelivery": phone_delivery,
-            },
-        )
+    email_id = ""
+    if SEND_ALERT_EMAIL:
+        try:
+            email_id = send_email(
+                email_subject, email_body, email_html, audio_bytes, audio_name, audio_type, caller
+            )
+        except Exception as exc:
+            logger.error("Email send failed: %s", exc)
+            return response(
+                502,
+                {
+                    "error": "email_failed",
+                    "detail": str(exc),
+                    "phoneDelivery": phone_delivery,
+                },
+            )
+    else:
+        logger.info("Skipping alert email (SEND_ALERT_EMAIL=false; YouMail already emails Gmail)")
 
     logger.info(
         "alert caller=%s type=%s hasAudio=%s audioBytes=%d phone=%s source=%s",

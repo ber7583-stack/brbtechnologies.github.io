@@ -79,6 +79,7 @@ export class MissedCallVoicemailStack extends cdk.Stack {
         GV_SESSION_SECRET_ARN: gvSessionSecret.secretArn,
         YOUMAIL_SESSION_SECRET_ARN: youmailSessionSecret.secretArn,
         RECIPIENT_TIMEZONE: CONFIG.recipientTimezone || "America/New_York",
+        SEND_ALERT_EMAIL: CONFIG.sendAlertEmail === true ? "true" : "false",
       },
     });
 
