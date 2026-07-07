@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Save Google Voice Session for Voicemail Alerts</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 20px; line-height: 1.5; }
+    h1 { font-size: 22px; }
+    .step { background: #f5f5f5; padding: 16px; margin: 16px 0; border-radius: 8px; }
+    textarea { width: 100%; height: 120px; font-family: monospace; font-size: 12px; }
+    button { background: #1a73e8; color: white; border: none; padding: 12px 20px; font-size: 16px; border-radius: 6px; cursor: pointer; margin: 8px 4px 8px 0; }
+    button:hover { background: #1557b0; }
+    .ok { color: #137333; font-weight: bold; }
+    .warn { color: #b06000; }
+    a { color: #1a73e8; }
+  </style>
+</head>
+<body>
+  <h1>Save Google Voice session (one time)</h1>
+  <p class="warn"><b>Do this while logged into voice.google.com in Chrome.</b></p>
+
+  <div class="step">
+    <b>Step 1</b> — Open <a href="https://voice.google.com" target="_blank">voice.google.com</a> and sign in as <b>ber7583@gmail.com</b>
+  </div>
+
+  <div class="step">
+    <b>Step 2</b> — Install <a href="https://chromewebstore.google.com/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm" target="_blank">Cookie-Editor</a> (free Chrome extension)
+  </div>
+
+  <div class="step">
+    <b>Step 3</b> — On voice.google.com, click the <b>Cookie-Editor</b> puzzle icon → <b>Export</b> → <b>Export as JSON</b> → copy everything
+  </div>
+
+  <div class="step">
+    <b>Step 4</b> — Paste below and click <b>Convert</b>
+    <br><br>
+    <textarea id="input" placeholder="Paste Cookie-Editor JSON here..."></textarea>
+    <br>
+    <button onclick="convert()">Convert</button>
+    <button onclick="copyOut()">Copy result</button>
+    <p id="status"></p>
+    <textarea id="output" placeholder="Converted session appears here — copy this to AWS"></textarea>
+  </div>
+
+  <div class="step">
+    <b>Step 5</b> — Go to <a href="https://us-east-1.console.aws.amazon.com/secretsmanager/listsecrets?region=us-east-1" target="_blank">AWS Secrets Manager</a>
+    → open <b>GvSessionSecret</b> → <b>Edit</b> → paste the converted text → <b>Save</b>
+  </div>
+
+  <script>
+    function convert() {
+      const raw = document.getElementById("input").value.trim();
+      const status = document.getElementById("status");
+      const output = document.getElementById("output");
+      if (!raw) {
+        status.textContent = "Paste the Cookie-Editor export first.";
+        status.className = "warn";
+        return;
+      }
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (e) {
+        status.textContent = "Invalid JSON — make sure you copied the full export.";
+        status.className = "warn";
+        return;
+      }
+      const list = Array.isArray(parsed) ? parsed : parsed.cookies || [];
+      const cookies = list
+        .filter((c) => {
+          const d = (c.domain || "").replace(/^\./, "");
+          return d === "google.com" || d.endsWith(".google.com");
+        })
+        .map((c) => ({
+          name: c.name,
+          value: c.value,
+          domain: c.domain,
+          path: c.path || "/",
+        }));
+      const names = new Set(cookies.map((c) => c.name));
+      const needed = ["SID", "SAPISID", "__Secure-3PSID"];
+      const missing = needed.filter((n) => !names.has(n));
+      if (missing.length) {
+        status.textContent =
+          "Missing cookies: " +
+          missing.join(", ") +
+          ". Export while on voice.google.com and logged in.";
+        status.className = "warn";
+      } else {
+        status.textContent = "Success! Click Copy result, then paste into AWS GvSessionSecret.";
+        status.className = "ok";
+      }
+      output.value = JSON.stringify({ version: 1, cookies }, null, 2);
+    }
+
+    function copyOut() {
+      const output = document.getElementById("output");
+      output.select();
+      document.execCommand("copy");
+      document.getElementById("status").textContent = "Copied! Now paste into AWS Secrets Manager.";
+      document.getElementById("status").className = "ok";
+    }
+  </script>
+</body>
+</html>

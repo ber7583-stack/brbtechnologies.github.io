@@ -1,0 +1,9 @@
+lambda/**/__pycache__/
+infra/node_modules/
+infra/cdk.out/
+infra/*.js
+infra/*.d.ts
+infra/lib/*.js
+infra/lib/*.d.ts
+infra/bin/*.js
+infra/bin/*.d.ts
